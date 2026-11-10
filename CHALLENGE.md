@@ -66,15 +66,15 @@ A entrega é **at-least-once**. Portanto assuma que:
 
 ### Obrigatória
 
-| Item | Escolha |
-|---|---|
-| Runtime / package manager / test runner | **Bun 1.x** |
-| Linguagem | **TypeScript** em modo estrito |
-| Framework | **NestJS** |
-| Banco | **PostgreSQL** |
-| Mensageria | **AWS SQS** via **LocalStack** ou **MiniStack** |
-| Orquestração local | **Docker Compose** |
-| Migrations | versionadas e reversíveis |
+| Item                                    | Escolha                                         |
+| --------------------------------------- | ----------------------------------------------- |
+| Runtime / package manager / test runner | **Bun 1.x**                                     |
+| Linguagem                               | **TypeScript** em modo estrito                  |
+| Framework                               | **NestJS**                                      |
+| Banco                                   | **PostgreSQL**                                  |
+| Mensageria                              | **AWS SQS** via **LocalStack** ou **MiniStack** |
+| Orquestração local                      | **Docker Compose**                              |
+| Migrations                              | versionadas e reversíveis                       |
 
 ### ORM
 
@@ -366,12 +366,12 @@ Inbox, alteração financeira, ledger e outbox participam da **mesma transação
 
 ## 7. Regras de negócio
 
-| Operação | Efeito no saldo | Ledger | Regra principal |
-|---|---|---|---|
-| `BET` | débito | 1 entrada `DEBIT` | rejeitar se saldo insuficiente |
-| `WIN` | crédito | 1 entrada `CREDIT` | pode referenciar a `BET` da mesma rodada |
-| `LOSS` | nenhum | nenhuma | registra o resultado sem mover saldo |
-| `REFUND` | crédito | 1 entrada `CREDIT` | reverte uma `BET` `PROCESSED`, uma única vez |
+| Operação   | Efeito no saldo       | Ledger              | Regra principal                                  |
+| ---------- | --------------------- | ------------------- | ------------------------------------------------ |
+| `BET`      | débito                | 1 entrada `DEBIT`   | rejeitar se saldo insuficiente                   |
+| `WIN`      | crédito               | 1 entrada `CREDIT`  | pode referenciar a `BET` da mesma rodada         |
+| `LOSS`     | nenhum                | nenhuma             | registra o resultado sem mover saldo             |
+| `REFUND`   | crédito               | 1 entrada `CREDIT`  | reverte uma `BET` `PROCESSED`, uma única vez     |
 | `ROLLBACK` | inverso da referência | 1 entrada invertida | reverte uma transação `PROCESSED`, uma única vez |
 
 Regras adicionais:
@@ -595,12 +595,12 @@ Cenário que precisa funcionar:
 
 ### Eventos mínimos
 
-| Evento | Quando |
-|---|---|
-| `WagerTransactionProcessed` | qualquer transação aplicada, inclusive `LOSS` |
-| `WagerTransactionRejected` | transação rejeitada por regra de negócio |
-| `WalletBalanceChanged` | **somente** quando o saldo muda |
-| `WagerTransactionPendingReference` | referência ausente |
+| Evento                             | Quando                                        |
+| ---------------------------------- | --------------------------------------------- |
+| `WagerTransactionProcessed`        | qualquer transação aplicada, inclusive `LOSS` |
+| `WagerTransactionRejected`         | transação rejeitada por regra de negócio      |
+| `WalletBalanceChanged`             | **somente** quando o saldo muda               |
+| `WagerTransactionPendingReference` | referência ausente                            |
 
 Envelope — **classe abstrata**, com uma subclasse concreta por evento:
 
@@ -719,16 +719,16 @@ wallet.balance == saldo reconstruído pelo ledger
 
 ## 14. Avaliação — 100 pontos
 
-| Área | Pontos | O que será observado |
-|---|---|---|
-| Correção financeira | 20 | `Money`, saldo, ledger, reversões, reconciliação |
-| Concorrência | 20 | lost updates, hot wallet, múltiplas instâncias, locks |
-| Idempotência | 15 | dedup persistente, replay, payload conflitante |
-| Mensageria e falhas | 15 | inbox, outbox, retry, DLQ, crash recovery, shutdown |
-| Modelagem e arquitetura | 10 | invariantes encapsuladas em classes, boundaries, portas, simplicidade |
-| Testes | 10 | integração real, races, determinismo, cobertura de falhas |
-| Observabilidade | 5 | logs, métricas, health checks, diagnóstico |
-| Documentação | 5 | `README.md` com setup e comandos, `ARCHITECTURE.md` com decisões, trade-offs e limitações |
+| Área                    | Pontos | O que será observado                                                                      |
+| ----------------------- | ------ | ----------------------------------------------------------------------------------------- |
+| Correção financeira     | 20     | `Money`, saldo, ledger, reversões, reconciliação                                          |
+| Concorrência            | 20     | lost updates, hot wallet, múltiplas instâncias, locks                                     |
+| Idempotência            | 15     | dedup persistente, replay, payload conflitante                                            |
+| Mensageria e falhas     | 15     | inbox, outbox, retry, DLQ, crash recovery, shutdown                                       |
+| Modelagem e arquitetura | 10     | invariantes encapsuladas em classes, boundaries, portas, simplicidade                     |
+| Testes                  | 10     | integração real, races, determinismo, cobertura de falhas                                 |
+| Observabilidade         | 5      | logs, métricas, health checks, diagnóstico                                                |
+| Documentação            | 5      | `README.md` com setup e comandos, `ARCHITECTURE.md` com decisões, trade-offs e limitações |
 
 ### Falhas eliminatórias
 
