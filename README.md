@@ -44,6 +44,15 @@ $ bun run start:dev
 $ bun run start:prod
 ```
 
+## Static checks
+
+```bash
+bun run typecheck
+bun run lint
+```
+
+Both commands check application code, tests, and Vitest configuration.
+
 ## Run tests
 
 ```bash
