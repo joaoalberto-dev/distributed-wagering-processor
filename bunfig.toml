@@ -1,0 +1,3 @@
+[test]
+pathIgnorePatterns = ["**/node_modules/**", "**/dist/**", "temp/**", "**/.settings/**"]
+coverageSkipTestFiles = true

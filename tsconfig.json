@@ -26,8 +26,8 @@
     "noUnusedParameters": true,
     "noUncheckedSideEffectImports": true,
     "noEmitOnError": true,
-    "types": ["vitest/globals", "node"]
+    "types": ["bun", "node"]
   },
-  "include": ["src/**/*.ts", "test/**/*.ts", "vitest*.config*.ts"],
+  "include": ["src/**/*.ts", "test/**/*.ts"],
   "exclude": ["node_modules", "dist"]
 }
