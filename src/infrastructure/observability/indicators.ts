@@ -1,5 +1,7 @@
+import { GetQueueAttributesCommand, type SQSClient } from '@aws-sdk/client-sqs';
 import type { MikroORM } from '@mikro-orm/postgresql';
 import type { HealthIndicatorService } from '@nestjs/terminus';
+import type { SqsQueues } from '../messaging/sqs-queues.js';
 import { LATEST_MIGRATION } from '../persistence/schema-version.js';
 
 /** Each readiness check gives up after 1 s (tuning table). */
@@ -31,6 +33,8 @@ function reason(error: unknown): string {
 export class ReadinessIndicators {
   constructor(
     private readonly orm: MikroORM,
+    private readonly sqs: SQSClient,
+    private readonly queues: Pick<SqsQueues, 'url'>,
     private readonly health: HealthIndicatorService,
     private readonly timeoutMs = READINESS_CHECK_TIMEOUT_MS,
   ) {}
@@ -43,6 +47,36 @@ export class ReadinessIndicators {
       return check.up();
     } catch (error) {
       return check.down({ message: reason(error) });
+    }
+  }
+
+  /**
+   * SQS answers `GetQueueAttributes` on the input queue. The attributes call
+   * bypasses the `sqs` circuit, so a readiness probe never closes it; only
+   * the queue-URL lookup, made once, goes through it.
+   */
+  async sqsQueue() {
+    const check = this.health.check('sqs');
+    const abort = new AbortController();
+    try {
+      await within(
+        this.timeoutMs,
+        (async () => {
+          const queueUrl = await this.queues.url('input');
+          await this.sqs.send(
+            new GetQueueAttributesCommand({
+              QueueUrl: queueUrl,
+              AttributeNames: ['QueueArn'],
+            }),
+            { abortSignal: abort.signal },
+          );
+        })(),
+      );
+      return check.up();
+    } catch (error) {
+      return check.down({ message: reason(error) });
+    } finally {
+      abort.abort();
     }
   }
 

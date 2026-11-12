@@ -33,7 +33,7 @@ export class ObservabilityModule {
         {
           provide: ReadinessIndicators,
           useFactory: (health: HealthIndicatorService) =>
-            new ReadinessIndicators(app.orm, health),
+            new ReadinessIndicators(app.orm, app.sqs, app.queues, health),
           inject: [HealthIndicatorService],
         },
       ],

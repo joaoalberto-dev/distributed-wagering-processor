@@ -17,12 +17,13 @@ export class HealthController {
     return { status: 'ok' };
   }
 
-  /** PostgreSQL and the schema version; 503 names the failing check. SQS joins in task 09. */
+  /** PostgreSQL, SQS, and the schema version; 503 names the failing check. */
   @Get('ready')
   @HealthCheck()
   ready() {
     return this.health.check([
       () => this.indicators.postgres(),
+      () => this.indicators.sqsQueue(),
       () => this.indicators.migrations(),
     ]);
   }

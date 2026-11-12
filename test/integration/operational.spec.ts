@@ -108,7 +108,7 @@ describe('health', () => {
     expect(response.body).toEqual({ status: 'ok' });
   });
 
-  it('reports PostgreSQL and the migration check in readiness', async () => {
+  it('reports PostgreSQL, SQS, and the migration check in readiness', async () => {
     const response = await http.get<{
       status: string;
       info: Record<string, Record<string, unknown>>;
@@ -117,6 +117,7 @@ describe('health', () => {
     expect(response.body.status).toBe('ok');
     expect(response.body.info).toEqual({
       postgres: { status: 'up' },
+      sqs: { status: 'up' },
       migrations: {
         status: 'up',
         latest: 'Migration0007RejectionSnapshotCurrency',
