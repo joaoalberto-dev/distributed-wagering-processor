@@ -253,12 +253,13 @@ The envelope is an abstract `IntegrationEvent<T>` with one subclass per event, c
 *   **SQS or PostgreSQL outage.**
     *   Each dependency has a circuit breaker that counts only Outage errors.
     *   While it is open, the polling loops that need it skip their cycles. Messages are not received, so retry budgets are not consumed.
-    *   After the open period, the next normal cycle is the probe. HTTP keeps committing during an SQS outage, and the outbox backlog drains afterwards.
+    *   After the open period, the next normal cycle is the probe. While a circuit is half-open, the consumer's receive is a short poll, so its probe settles at once instead of holding the circuit half-open, and refusing the process's other calls, for a 20 s long poll.
+    *   HTTP keeps committing during an SQS outage, the outbox backlog and `outbox_lag_seconds` grow, and the backlog drains afterwards with the original `eventId`s.
 *   **Restart.** All state lives in PostgreSQL and the queues. After a restart, pending references, unpublished events, and in-flight messages are picked up by whichever instance runs first.
 *   **`SIGTERM`.**
     1.  The consumer stops polling, finishes the message in progress in each group within 20 s, and releases the unstarted ones with visibility 0.
     2.  The publisher and the worker finish their current cycle.
-    3.  Readiness returns 503 while HTTP drains.
+    3.  Readiness returns 503, naming `shutdown`, from the start of shutdown until the HTTP server closes. The flag is set in `onModuleDestroy`, which Nest runs before any drain, and the HTTP server keeps serving until the drain ends.
 
 ## 6. Modeling and architecture
 
@@ -332,8 +333,11 @@ The envelope is an abstract `IntegrationEvent<T>` with one subclass per event, c
     | outbox lag | `outbox_lag_seconds`, `outbox_pending`, `outbox_sender_faults_total` |
     | latency | `wager_processing_duration_seconds` |
 
-    Also: `pending_references`, `reference_failed_total`, `reconciliation_divergences_total`, `bulkhead_rejections_total`, `circuit_state`, and pool gauges.
-*   **Health.** `/health/live` checks only the process. `/health/ready` checks PostgreSQL, SQS, and that the latest migration is applied, each with a 1 s timeout. It returns 503 while draining, naming the failing dependency. Neither requires authentication.
+    Also: `pending_references`, `reference_failed_total`, `reconciliation_divergences_total`, `bulkhead_rejections_total`, `circuit_state`, and the pool gauges `db_pool_in_use` and `db_pool_waiting`.
+
+    *   **Lock conflicts.** `wallet_lock_wait_seconds{channel}` times each waiting wallet lock; a lock that times out is counted by `wallet_lock_timeouts_total` (`55P03`) instead. `statement_timeouts_total` counts `57014`. Both come from the unit of work and the query port, through a `PersistenceObserver` the metrics implement.
+    *   **Gauges at scrape.** `outbox_pending`, `outbox_lag_seconds` (age of the oldest unpublished event), `pending_references`, and `sqs_dlq_depth` are read when `/metrics` is scraped, each read with a 1 s timeout and outside the circuits. Only instances that run the publisher or the worker expose them, so scraping every instance does not multiply the load; dashboards take the `max`. A read that fails reports `NaN`, which `max` skips, rather than a stale or a zero value; the scrape itself still answers. The pool gauges are read last, so the scrape's own reads are not counted.
+*   **Health.** `/health/live` checks only the process. `/health/ready` checks PostgreSQL, SQS, and that the latest migration is applied, each with a 1 s timeout. A failing check answers 503 with a body that names it (`postgres`, `sqs`, or `migrations`). While draining, it answers 503 naming `shutdown` and checks no dependency. Neither requires authentication.
     *   The expected migration is `LATEST_MIGRATION` in `src/infrastructure/persistence/schema-version.ts`, because the build compiles only `src/`; `migrations/index.ts` re-exports it, and the migrations spec checks that it names the last migration.
 *   **Request context.** Every request gets a new `X-Request-Id`. An incoming `X-Correlation-Id` of 1–128 characters from `[A-Za-z0-9._:-]` is kept, and any other value is replaced by a new UUIDv7. Both are returned as response headers and carried into every log line of the request.
 *   **Readiness and routing.** Readiness covers SQS, as challenge §9 requires. In the shipped topology nothing routes on readiness, so HTTP keeps serving during an SQS outage. A production setup behind a load balancer would split HTTP readiness from consumer readiness.
@@ -467,6 +471,7 @@ In chronological order. A revised decision is not deleted: it is marked **Supers
 | 35 | Reversals and the pending-reference worker (task 08), listed below this table. | Decided |
 | 36 | SQS consumption with the inbox, retries, and the DLQ (task 09), listed below this table. | Decided |
 | 37 | Concurrent outbox publishing (task 10), listed below this table. | Decided |
+| 38 | Observability and health checks (task 11), listed below this table. | Decided |
 
 Decision 29 settled these points:
 
@@ -560,3 +565,16 @@ Decision 37 settled these points:
     *   MiniStack's FIFO deduplication window drops the republished batch, so no duplicate reaches the queue in that run. The spec simulates a republish after the window by resending the crashed batch under new deduplication IDs, and checks that a reader that removes duplicates by `eventId` still sees each event once.
     *   The hot-wallet burst lasts under half a second, which is shorter than the publisher's idle poll. So `hot-wallet` asserts that every event of the burst and the quiet wallets is published within 15 s, with the `sqs` circuit closed and no sender fault, rather than that events arrive while the burst runs.
     *   `WagerTransactionFailed` needs an unexpected error at the reference TTL, so it is covered by the application and domain specs, not over the wire.
+
+Decision 38 settled these points:
+
+*   **Lock-wait channel.** `UnitOfWorkOptions` gained an optional `channel`, passed only by the units of work that lock a wallet (the decision step of `SubmitWagerTransaction`, and the worker's attempt and `FAILED` steps). The wallet repository times the waiting lock and reports it through the unit of work's observer. A skip-locked read never waits and is not timed.
+*   **Gauges owned by `DatabaseGauges`.** prom-client always exposes an unlabelled gauge, so a gauge cannot be dropped on a failed read. `DatabaseGauges` therefore registers the shared gauges only on publisher or worker instances, and sets `NaN` on a failed read; prom-client prints it as `Nan`, which Prometheus parses in any case.
+*   **Draining.** Terminus marks its own shutdown in `beforeApplicationShutdown`, whose order relative to the consumer's drain depends on module order. A `ShutdownState` provider is set in `onModuleDestroy` instead, which runs on every module before any drain.
+*   **Half-open probe.** The SQS outage spec showed processes left half-open after recovery: the consumer's first call was a 20 s long poll on an empty queue, and the circuit refused the publisher's sends until it returned. The consumer now short-polls while any circuit it needs is half-open.
+*   **Tests.**
+    *   `test/support/tcp-proxy.ts` sits between spawned processes and PostgreSQL or MiniStack; `cut()` terminates every connection and refuses new ones. A cluster can take its environment as a function, so its processes get the proxy's port, known only once the spec's hooks ran.
+    *   `observability` checks each required category over the wire on one process, with the publisher off so the backlog stays visible until a publisher process starts. `statement_timeouts_total` needs a statement that outruns its timeout, which no route causes, so the unit-of-work spec covers it with a transaction-local `statement_timeout`; `unique_violation_retries_total` and `reconciliation_divergences_total` stay covered by their application specs.
+    *   The log check parses every JSON line of the process and fails on a key named `amount`, `balance`, `money`, or `payload`, on any string value shaped like an amount, and on the spec's own amounts anywhere in the output.
+    *   `shutdown` holds the four wallets' row locks so each group's first message is in progress when `SIGTERM` arrives, with a lock timeout longer than the hold. It checks that exactly those four commit before the exit and that the other 16 are visible again at once, well before their 30 s visibility timeout.
+    *   `sqs-outage` sends its waiting messages to the input queue directly, not through the proxy, and shows that no receive budget was spent by finding them all still visible, with none in flight, at the end of the 60 s outage.
