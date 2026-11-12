@@ -4,6 +4,7 @@
  */
 export interface AppLogger {
   warn(message: string, fields?: Readonly<Record<string, unknown>>): void;
+  error(message: string, fields?: Readonly<Record<string, unknown>>): void;
 }
 
 export const APP_LOGGER = Symbol('AppLogger');

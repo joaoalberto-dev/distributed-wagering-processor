@@ -36,6 +36,10 @@ export class NestAppLogger implements AppLogger {
   warn(message: string, fields: Readonly<Record<string, unknown>> = {}): void {
     this.logger.warn(message, { ...fields }, this.context);
   }
+
+  error(message: string, fields: Readonly<Record<string, unknown>> = {}): void {
+    this.logger.error(message, { ...fields }, this.context);
+  }
 }
 
 const SEVERITY: readonly LogLevel[] = [

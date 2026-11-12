@@ -59,3 +59,32 @@ describe('JsonLogger', () => {
     });
   });
 });
+
+describe('NestAppLogger.error', () => {
+  it('writes the fields at the root at error level', () => {
+    const context = new AsyncLocalRequestContext({ instanceId: 'i-1' });
+    const logger = new JsonLogger(context, ['error']);
+    const lines: string[] = [];
+    for (const stream of [process.stdout, process.stderr]) {
+      const spy = spyOn(stream, 'write').mockImplementation((chunk) => {
+        lines.push(String(chunk));
+        return true;
+      });
+      restore.push(() => spy.mockRestore());
+    }
+    new NestAppLogger(logger, 'SqsConsumer').error('failed', {
+      reason: 'TypeError',
+    });
+    const record = JSON.parse(lines.join('') || '{}') as Record<
+      string,
+      unknown
+    >;
+    expect(record).toMatchObject({
+      level: 'error',
+      message: 'failed',
+      context: 'SqsConsumer',
+      reason: 'TypeError',
+      instanceId: 'i-1',
+    });
+  });
+});

@@ -105,7 +105,7 @@ function submitFailingAt(point: Point): SubmitWagerTransaction {
     app.clock,
     app.ids,
     app.metrics,
-    { warn: () => undefined },
+    { warn: () => undefined, error: () => undefined },
     app.providerIdentity,
     app.requestContext,
     { referenceTtlMs: 60_000 },
