@@ -43,7 +43,9 @@ The defaults match the compose services, so no `.env` is required. [.env.example
 | `bun run typecheck` | Type-checks everything |
 | `bun run lint` | Lints, including the layer dependency rules |
 | `bun run format` / `bun run format:check` | Formats / checks formatting |
-| `bun run check` | Type check, lint, format check and unit tests: what CI runs |
+| `bun run check` | Type check, lint, format check and unit tests: CI job 1 |
+| `bun run demo` | Checks the main guarantees against the three `app` containers, including a `SIGKILL` of `app-2` (`--skip-crash` leaves it out) |
+| `bun run dlq:redrive` | Moves DLQ messages that failed for a retryable reason back to the input queue (`--include-unexpected`, `--dry-run`; [ARCHITECTURE.md §5](ARCHITECTURE.md#sqs-consumption)) |
 
 ## Tests
 
@@ -63,9 +65,13 @@ Integration and concurrency tests need `docker compose up -d postgres ministack 
 | Integration | `test/integration/` | PostgreSQL and MiniStack | migrations, every constraint and trigger, atomicity, inbox and redelivery, retries and the DLQ, the outbox, reconciliation, metrics, readiness, and the `SIGTERM` drain |
 | Concurrency | `test/concurrency/` | the same, plus 3 or more processes it starts itself | the eight scenarios of the challenge (50 copies of one bet, the contended balance, `SIGKILL` after commit, two publishers, reversals before their bets, a restart of every process), a hot wallet, and a 60 s SQS outage |
 
+CI job 2 runs the integration and concurrency layers against PostgreSQL and MiniStack service containers.
+
 [ARCHITECTURE.md §7](ARCHITECTURE.md#7-tests) maps every requirement to its tests and records a full run.
 
 ## Demo
+
+`bun run demo` runs contention, replay, an out-of-order reversal, a crash of one instance under SQS traffic, and reconciliation against the three instances, and checks every outcome.
 
 With the three instances of the `app` profile running (see [Getting started](#getting-started)), this walks through the main guarantees with `curl`. Each request goes to a different instance, and every identifier carries a per-run prefix, so the demo can be run again as is. Paste it into `bash` or `zsh`.
 
