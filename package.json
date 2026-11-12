@@ -13,6 +13,7 @@
     "setup": "bun scripts/setup.ts",
     "migrate:up": "bun scripts/migrate.ts up",
     "migrate:down": "bun scripts/migrate.ts down",
+    "dlq:redrive": "bun scripts/redrive-dlq.ts",
     "typecheck": "tsc --noEmit",
     "lint": "oxlint --deny-warnings src/ test/ migrations/ scripts/",
     "format": "oxfmt \"src/**/*.ts\" \"test/**/*.ts\" \"migrations/**/*.ts\" \"scripts/**/*.ts\"",
