@@ -274,7 +274,9 @@ The envelope is an abstract `IntegrationEvent<T>` with one subclass per event, c
     *   `PENDING` exists only in memory.
     *   The persisted edges are: insert as `PROCESSED`, `REJECTED`, or `PENDING_REFERENCE`; then `PENDING_REFERENCE` to itself, `PROCESSED`, `REJECTED`, or `FAILED`.
     *   Terminal rows never change.
-*   **Ports.** `UnitOfWork`; the repositories for wallets, transactions, ledger, inbox, and outbox; `ReconciliationReader`; `QueryPort`; `EventPublisher`; `ProviderIdentityPort`; `Clock`; `IdGenerator`; `Telemetry`; `RequestContext`.
+*   **Ports.** `UnitOfWork`; the repositories for wallets, transactions, ledger, inbox, and outbox; `ReconciliationReader`; `QueryPort`; `EventPublisher`; `ProviderIdentityPort`; `Clock`; `IdGenerator`; `Telemetry`; `RequestContext`; `AppLogger`.
+*   **Composition.** `buildApplication(config)` in `src/bootstrap/container.ts` builds every adapter, policy, and use case without Nest; the Nest modules only expose what it returns, and in-process tests build the same graph. The container owns the one MikroORM instance and its pool; `PersistenceModule` closes it on shutdown.
+*   **Resilience wiring.** The `postgres` circuit wraps each unit-of-work attempt and each read of `QueryPort`; an open circuit fails fast as an Outage (`503`). The HTTP contention retry wraps the whole attempt from outside, so it never retries a call the circuit refused. Bulkheads are applied by a global interceptor in `src/bootstrap`, keyed by handler: reconciliation, readiness and `/metrics`, and every other business route; liveness has none.
 *   **MikroORM usage.**
     *   Persistence records (`defineEntity`, no decorators) are separate from the domain classes, with explicit mappers, because ORM hydration would bypass `rehydrate`.
     *   Each operation uses the entity manager of its own `em.transactional()` call, with one ordered `flush` at commit (`FlushMode.COMMIT`, so a query never flushes early); the global context is disabled. State is loaded after the lock, with `refresh`.
@@ -322,6 +324,8 @@ The envelope is an abstract `IntegrationEvent<T>` with one subclass per event, c
 
     Also: `pending_references`, `reference_failed_total`, `reconciliation_divergences_total`, `bulkhead_rejections_total`, `circuit_state`, and pool gauges.
 *   **Health.** `/health/live` checks only the process. `/health/ready` checks PostgreSQL, SQS, and that the latest migration is applied, each with a 1 s timeout. It returns 503 while draining, naming the failing dependency. Neither requires authentication.
+    *   The expected migration is `LATEST_MIGRATION` in `src/infrastructure/persistence/schema-version.ts`, because the build compiles only `src/`; `migrations/index.ts` re-exports it, and the migrations spec checks that it names the last migration.
+*   **Request context.** Every request gets a new `X-Request-Id`. An incoming `X-Correlation-Id` of 1–128 characters from `[A-Za-z0-9._:-]` is kept, and any other value is replaced by a new UUIDv7. Both are returned as response headers and carried into every log line of the request.
 *   **Readiness and routing.** Readiness covers SQS, as challenge §9 requires. In the shipped topology nothing routes on readiness, so HTTP keeps serving during an SQS outage. A production setup behind a load balancer would split HTTP readiness from consumer readiness.
 
 ## 9. HTTP contract and failure codes
@@ -446,6 +450,7 @@ In chronological order. A revised decision is not deleted: it is marked **Supers
 | 29 | Design review outcome, listed below this table. | Decided |
 | 30 | Domain implementation (task 03): `referenceReversedBy` flags only a `WIN` or `LOSS` decided after its `BET` was reversed, because terminal results are never rewritten; `REFERENCE_ALREADY_REVERSED` also carries `details.referenceReversedBy`. This refines the "both arrival orders" wording of the task 03 and task 08 test lists in the design document. | Decided |
 | 31 | Persistence implementation (task 04), listed below this table. | Decided |
+| 32 | Wallets, reconciliation, and the operational base (task 05), listed below this table. | Decided |
 
 Decision 29 settled these points:
 
@@ -473,3 +478,14 @@ Decision 31 settled these points:
 *   **Wallet conflict.** The error classifier raises `WalletAlreadyExists` without the ID; the use case re-reads and fills it in.
 *   **Processed without an entry.** A fifth deferred check on `wager_transactions` refuses a `PROCESSED` transaction of a balance-moving kind without its ledger entry. Without it, a manual insert could record an operation as applied without moving the balance, and reconciliation would not see it, because the balance still equals the ledger.
 *   **Indexes.** The ledger `(wallet_id, wallet_version)` lookup uses the unique constraint's index; no duplicate index is created.
+
+Decision 32 settled these points:
+
+*   **Opening a wallet.** `applyOutcome` records an `OPENING` without `Wallet.apply`: the new wallet already holds the opening balance at version 1, so the entry records the move from zero at version 1. A worker attempt that still waits is a reschedule, not an `applyOutcome` call.
+*   **Wallet conflicts.** `OpenWallet` checks for an existing wallet first; a concurrent open that wins at commit is re-read in a second unit of work, so every `409` carries `details.walletId`.
+*   **Logger port.** `AppLogger` lets use cases log warnings (a reconciliation divergence, and later the worker's) without importing Nest. Its adapter writes through the JSON logger, so the request-context fields are merged in.
+*   **One pool per process.** `MikroOrmModule.forRoot` is not used: it would open a second pool beside the container's. Nest modules expose the container's adapters instead.
+*   **Schema version.** `LATEST_MIGRATION` moved into `src/` (see §8, Health).
+*   **Error contract details.** A malformed path parameter or body is `400 VALIDATION_FAILED`, with each issue named by its field or parameter. Malformed JSON is also `400 VALIDATION_FAILED`. An unknown route is `404 NOT_FOUND` in the error envelope. Readiness keeps the health-check body, which names each check.
+*   **Ledger pages.** A page reads one entry beyond `limit`; `nextCursor` is set only when that entry exists, so the last page always has `nextCursor: null`, even when it is full. An unknown wallet is `404` before any cursor is used.
+*   **Test fakes.** The recording publisher arrives with the `EventPublisher` port in task 10; task 05 adds the other fakes and a recording logger.
