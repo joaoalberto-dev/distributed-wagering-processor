@@ -574,6 +574,7 @@ In chronological order. A revised decision is not deleted: it is marked **Supers
 | 37 | Concurrent outbox publishing (task 10), listed below this table. | Decided |
 | 38 | Observability and health checks (task 11), listed below this table. | Decided |
 | 39 | Recovery across multiple instances (task 12), listed below this table. | Decided |
+| 40 | Documentation and the delivery demonstration (task 13), listed below this table. | Decided |
 
 Decision 29 settled these points:
 
@@ -688,3 +689,10 @@ Decision 39 settled these points:
 *   **Mixed traffic.** Each group of five operations on a wallet has a bet that is won, a bet that is refunded, and either a rollback of the win or a loss. Two groups in three send the dependents first, so pending references exist when the kill happens and must be resolved by the wake-up and the workers of the new processes. Every operation is valid with enough funds in any order, so each wallet ends at an exact balance and version (`985.00`, version 46) that a duplicated or lost effect would change.
 *   **The 60 s window** starts when the new processes are ready and covers the resends and the rest of the traffic. Within it the spec waits for no `PENDING_REFERENCE` row, no unpublished outbox row, and no visible or in-flight input message for its wallets; then it checks the DLQ is empty, all 500 operations are `PROCESSED`, and every wallet reconciles.
 *   **Reconciliation during writes.** `reconcile-during-writes` sends reconciliation `k` once `10 + 12k` of 300 writes were answered, so all 20 are sent while writes are in flight, and checks that most of them also answered before the writes ended. Each must answer `consistent: true` with no issues.
+
+Decision 40 settled these points:
+
+*   **Where the test evidence lives.** The test matrix, the challenge §13 checklist, the requirement-to-test table, and a recorded run are in §7, next to the test strategy, rather than in a separate document.
+*   **Redrive without a script.** The redrive procedure in §5 names the SQS calls and their parameters instead of commands of one tool, so it holds for the AWS CLI, an SDK, or the console. It sends each message as a new one with a new deduplication ID and deletes the DLQ copy last, because reusing the original ID inside the deduplication window loses the message silently.
+*   **The demonstration.** The `README.md` demo uses only `curl` and Bun against the three containers of the `app` profile, sending each step to a different instance. Every identifier carries a per-run prefix, so the demo can be run again without resetting the database.
+*   **A race in a test.** The first full run for the evidence failed once in `outbox-publisher`: the publisher sends before it commits, so the spec could see every event on the queue while the last rows were still unpublished. The spec now waits for the rows, as a consumer would; the publisher is unchanged.
