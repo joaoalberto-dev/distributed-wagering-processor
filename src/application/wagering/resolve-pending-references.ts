@@ -120,19 +120,37 @@ export class ResolvePendingReferences {
     return { transaction, ttlReached: check.ttlReached };
   }
 
-  /** One attempt under the wallet lock. */
+  /**
+   * One attempt under the row lock and the wallet lock.
+   *
+   * Before the TTL nothing waits: the row is claimed first with `SKIP LOCKED`,
+   * so a second worker on the same row gives up instead of pushing back a
+   * row whose attempt is under way, then the wallet with `SKIP LOCKED`. A
+   * worker that holds the row never waits, so this order forms no cycle.
+   * At the TTL the attempt must happen: the wallet is waited for first, as
+   * every other writer takes it, and then the row.
+   */
   private async resolve(
     tx: TxContext,
     due: WagerTransaction,
     ttlReachedBefore: boolean,
   ): Promise<Attempt> {
+    if (
+      !ttlReachedBefore &&
+      !(await tx.transactions.claim(due.id, 'skip-locked'))
+    ) {
+      return SKIPPED;
+    }
     const wallet = await tx.wallets.lock(
       due.walletId,
       ttlReachedBefore ? 'wait' : 'skip-locked',
     );
     if (wallet === null) {
-      // Busy: the row's own lock only, so the lock order holds.
+      // Busy with other work on the wallet; this worker holds the row.
       await tx.transactions.pushBack(due.id, this.settings.busyPushBackMs);
+      return SKIPPED;
+    }
+    if (ttlReachedBefore && !(await tx.transactions.claim(due.id, 'wait'))) {
       return SKIPPED;
     }
 

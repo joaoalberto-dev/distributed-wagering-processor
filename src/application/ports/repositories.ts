@@ -61,7 +61,13 @@ export interface TransactionRepository {
    * false when another worker already moved it.
    */
   reschedule(id: string, backoffMs: number): Promise<boolean>;
-  /** Pushes a due row back by `delayMs` without counting an attempt and without the wallet lock. */
+  /**
+   * Locks a pending, due row for this worker's attempt. `skip-locked` gives
+   * up at once when another worker holds it; `wait` waits for it. False when
+   * the row is held elsewhere or no longer due.
+   */
+  claim(id: string, mode: 'wait' | 'skip-locked'): Promise<boolean>;
+  /** Pushes a due row back by `delayMs` without counting an attempt; the caller has claimed it, not the wallet. */
   pushBack(id: string, delayMs: number): Promise<boolean>;
   /** Makes the pending dependents of `(providerId, externalId)` in this wallet due now; returns how many. */
   wakeDependents(

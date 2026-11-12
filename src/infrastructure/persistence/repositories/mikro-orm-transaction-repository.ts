@@ -95,6 +95,17 @@ export class MikroOrmTransactionRepository implements TransactionRepository {
     return rows.length > 0;
   }
 
+  async claim(id: string, mode: 'wait' | 'skip-locked'): Promise<boolean> {
+    const rows = await query<IdRow>(
+      this.em,
+      `SELECT id FROM wager_transactions
+        WHERE id = ? AND ${DUE}
+        FOR UPDATE${mode === 'skip-locked' ? ' SKIP LOCKED' : ''}`,
+      [id],
+    );
+    return rows.length > 0;
+  }
+
   async pushBack(id: string, delayMs: number): Promise<boolean> {
     const rows = await query<IdRow>(
       this.em,

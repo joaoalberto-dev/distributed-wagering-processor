@@ -193,6 +193,10 @@ class Transactions implements TransactionRepository {
     times.nextAttemptAt = this.#later(times, backoffMs);
     return Promise.resolve(true);
   }
+  /** Calls run one at a time, so a due row is always free to claim. */
+  claim(id: string, _mode: 'wait' | 'skip-locked'): Promise<boolean> {
+    return Promise.resolve(this.#due(id) !== undefined);
+  }
   pushBack(id: string, delayMs: number): Promise<boolean> {
     const times = this.#due(id);
     if (times === undefined) return Promise.resolve(false);

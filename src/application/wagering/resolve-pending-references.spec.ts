@@ -35,6 +35,8 @@ const brl = (amount: string) => Money.from({ amount, currency: 'BRL' });
 class WorkerUnitOfWork implements UnitOfWork {
   readonly locks: { id: string; mode: string }[] = [];
   readonly busy = new Set<string>();
+  /** Rows another worker holds: a `SKIP LOCKED` claim finds them taken. */
+  readonly held = new Set<string>();
   /** Runs inside the locking transaction, as another worker's committed work. */
   onLock: ((tx: TxContext) => Promise<void>) | undefined;
   /** Thrown by every reference read while set. */
@@ -72,6 +74,12 @@ class WorkerUnitOfWork implements UnitOfWork {
         get: (target, property, receiver) => {
           const value: unknown = Reflect.get(target, property, receiver);
           const error = this.referenceReadError;
+          if (property === 'claim') {
+            return (id: string, mode: 'wait' | 'skip-locked') =>
+              mode === 'skip-locked' && this.held.has(id)
+                ? Promise.resolve(false)
+                : target.claim(id, mode);
+          }
           if (property === 'findByExternalId' && error !== undefined) {
             return () => Promise.reject(error);
           }
@@ -336,6 +344,19 @@ describe('a busy wallet', () => {
 });
 
 describe('another worker', () => {
+  it('leaves a row it holds alone: no lock on the wallet, no push-back, no attempt', async () => {
+    const id = await pendingRefund();
+    reachNextAttempt(id);
+    uow.held.add(id);
+
+    await worker.runCycle();
+
+    expect(uow.locks).toEqual([]);
+    expect(dueIn(id)).toBe(0);
+    expect(row(id).attempts).toBe(0);
+    expect(attempts()).toEqual(['skipped']);
+  });
+
   it('skips a row whose backoff window was already handled', async () => {
     const id = await pendingRefund();
     reachNextAttempt(id);
