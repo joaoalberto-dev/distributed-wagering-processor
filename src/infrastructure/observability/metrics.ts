@@ -97,6 +97,7 @@ export class Metrics implements Telemetry, PolicyListener {
 
   constructor() {
     this.#circuitState.set({ dependency: 'postgres' }, 0);
+    this.#circuitState.set({ dependency: 'sqs' }, 0);
   }
 
   /** The exposition text for `GET /metrics`. */

@@ -9,12 +9,13 @@ import {
 } from '@nestjs/resilience';
 import { ContentionError, OutageError } from '../../application/errors.js';
 import type { AppConfig } from '../config/app-config.js';
+import { classifySqsError } from '../messaging/sqs-error-classifier.js';
 import type { CallGuard } from '../persistence/mikro-orm-unit-of-work.js';
 
 /** The route groups with their own bulkhead (connection budget, §10). */
 export type BulkheadGroup = 'http' | 'reconciliation' | 'readiness';
 
-export type Dependency = 'postgres';
+export type Dependency = 'postgres' | 'sqs';
 
 /**
  * The named policies of one process (tuning table). Every caller of a
@@ -28,17 +29,17 @@ export type Policies = {
   readonly circuits: Readonly<Record<Dependency, CircuitBreakerPolicy>>;
   /** Runs a call through the `postgres` circuit; an open circuit is an outage. */
   readonly postgres: CallGuard;
+  /**
+   * Runs an SQS call through the `sqs` circuit. Its errors are classified
+   * first, so an unreachable SQS or a 5xx is an outage the circuit records.
+   */
+  readonly sqs: CallGuard;
 };
 
-export function createPolicies(config: Pick<AppConfig, 'http'>): Policies {
-  const retry = new RetryPolicy({
-    name: 'http-contention',
-    attempts: 3,
-    backoff: { delay: 50, jitter: 'full' },
-    retryIf: (error) => error instanceof ContentionError,
-  });
-  const postgres = new CircuitBreakerPolicy({
-    name: 'postgres',
+/** Five consecutive outages open a circuit for 5 s; one half-open probe (tuning table). */
+function circuit(name: Dependency): CircuitBreakerPolicy {
+  return new CircuitBreakerPolicy({
+    name,
     // Five consecutive outages: every recorded call in a window of five failed.
     failureRateThreshold: 100,
     minimumCalls: 5,
@@ -48,6 +49,41 @@ export function createPolicies(config: Pick<AppConfig, 'http'>): Policies {
     // Contention on a hot wallet must never open it.
     recordIf: (error) => error instanceof OutageError,
   });
+}
+
+/** A call through `policy`, its errors classified inside, and an open circuit as an outage. */
+function guard(
+  dependency: Dependency,
+  policy: CircuitBreakerPolicy,
+  classify: (error: unknown) => unknown = (error) => error,
+): CallGuard {
+  return async (call) => {
+    try {
+      return await policy.execute(async () => {
+        try {
+          return await call();
+        } catch (error) {
+          throw classify(error);
+        }
+      });
+    } catch (error) {
+      if (error instanceof CircuitOpenError) {
+        throw new OutageError(dependency, 'circuit open', { cause: error });
+      }
+      throw error;
+    }
+  };
+}
+
+export function createPolicies(config: Pick<AppConfig, 'http'>): Policies {
+  const retry = new RetryPolicy({
+    name: 'http-contention',
+    attempts: 3,
+    backoff: { delay: 50, jitter: 'full' },
+    retryIf: (error) => error instanceof ContentionError,
+  });
+  const postgres = circuit('postgres');
+  const sqs = circuit('sqs');
   return {
     httpContentionRetry: (call) => retry.execute(() => call()),
     bulkheads: {
@@ -70,17 +106,9 @@ export function createPolicies(config: Pick<AppConfig, 'http'>): Policies {
         queueTimeout: '1s',
       }),
     },
-    circuits: { postgres },
-    postgres: async (call) => {
-      try {
-        return await postgres.execute(() => call());
-      } catch (error) {
-        if (error instanceof CircuitOpenError) {
-          throw new OutageError('postgres', 'circuit open', { cause: error });
-        }
-        throw error;
-      }
-    },
+    circuits: { postgres, sqs },
+    postgres: guard('postgres', postgres),
+    sqs: guard('sqs', sqs, classifySqsError),
   };
 }
 
@@ -95,7 +123,10 @@ const GROUPS: ReadonlySet<string> = new Set<BulkheadGroup>([
   'reconciliation',
   'readiness',
 ]);
-const DEPENDENCIES: ReadonlySet<string> = new Set<Dependency>(['postgres']);
+const DEPENDENCIES: ReadonlySet<string> = new Set<Dependency>([
+  'postgres',
+  'sqs',
+]);
 
 /**
  * Listens to the policies' events on the `nestjs:resilience:*` diagnostics

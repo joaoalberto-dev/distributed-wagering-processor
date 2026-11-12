@@ -87,3 +87,34 @@ describe('createPolicies', () => {
     }
   });
 });
+
+describe('the sqs circuit', () => {
+  it('records an unreachable SQS as an outage and opens after five', async () => {
+    const policies = createPolicies(config);
+    const refused = Object.assign(new Error('connect ECONNREFUSED'), {
+      code: 'ECONNREFUSED',
+    });
+    for (let i = 0; i < 5; i += 1) {
+      const error = await rejectionOf(policies.sqs(failWith(refused)));
+      expect(error).toBeInstanceOf(OutageError);
+      expect((error as OutageError).dependency).toBe('sqs');
+    }
+    expect(policies.circuits.sqs.state).toBe('open');
+    expect(policies.circuits.postgres.state).toBe('closed');
+    const fast = await rejectionOf(policies.sqs(() => Promise.resolve(1)));
+    expect((fast as OutageError).reason).toBe('circuit open');
+  });
+
+  it('passes a client error through without recording it', async () => {
+    const policies = createPolicies(config);
+    const missing = Object.assign(new Error('QueueDoesNotExist'), {
+      name: 'QueueDoesNotExist',
+      $fault: 'client',
+      $metadata: { httpStatusCode: 400 },
+    });
+    for (let i = 0; i < 6; i += 1) {
+      expect(await rejectionOf(policies.sqs(failWith(missing)))).toBe(missing);
+    }
+    expect(policies.circuits.sqs.state).toBe('closed');
+  });
+});
