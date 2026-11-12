@@ -27,9 +27,15 @@ export class WorkersModule
     if (this.app.config.roles.referenceWorker) {
       this.app.referenceWorker.start();
     }
+    if (this.app.config.roles.outboxPublisher) {
+      this.app.outboxPublisher.start();
+    }
   }
 
   async beforeApplicationShutdown(): Promise<void> {
-    await this.app.referenceWorker.stop();
+    await Promise.all([
+      this.app.referenceWorker.stop(),
+      this.app.outboxPublisher.stop(),
+    ]);
   }
 }
