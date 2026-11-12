@@ -41,6 +41,9 @@ export function toValidationIssues(issues: Issues): ValidationIssue[] {
 export class ContractValidationPipe extends StandardSchemaValidationPipe {
   constructor() {
     super({
+      // Custom decorators are validated only when they declare a schema, like
+      // `@RequestHeader`; the others pass through unchanged.
+      validateCustomDecorators: true,
       exceptionFactory: (issues: Issues) =>
         new ValidationFailed(toValidationIssues(issues)),
     });
