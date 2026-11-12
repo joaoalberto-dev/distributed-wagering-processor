@@ -221,7 +221,10 @@ A round may have several `WIN`s, and a processed `REFUND` may itself be rolled b
 ### Transactional outbox
 
 *   **Atomicity.** Events are written to `outbox` in the same transaction as the transaction row, the wallet, the ledger entry, and the inbox row. Nothing is published before commit.
-*   **Publishing cycle.** One short transaction selects up to 10 due rows with `FOR UPDATE SKIP LOCKED`, sends them with `SendMessageBatch` inside that transaction, and records each entry with the domain `OutboxMessage` (`markPublished`, or `scheduleRetry` with backoff). A trigger makes `published_at` write-once.
+*   **Publishing cycle.** `PublishOutbox` runs one short transaction: it selects up to 10 due rows with `FOR UPDATE SKIP LOCKED`, sends them with `SendMessageBatch` inside that transaction, and records each entry with the domain `OutboxMessage` (`markPublished`, or `scheduleRetry` with backoff). A trigger makes `published_at` write-once.
+    *   The publisher loop starts when `OUTBOX_PUBLISHER_ENABLED`. It runs the next cycle at once after a full batch, and otherwise waits 500 ms. It skips cycles while the `postgres` or the `sqs` circuit is open.
+    *   The send is one attempt (`maxAttempts: 1`, on an SQS client of its own), aborted after 5 s, through the `sqs` circuit. If the whole call throws, the transaction rolls back and no attempt is counted.
+    *   An entry that SQS refuses, or leaves out of its answer, is rescheduled with its reason in `last_error`. A sender fault (a malformed entry) also logs an error with the event's IDs and increments `outbox_sender_faults_total`.
 *   **Crash safety.** A crash during the send releases the row locks at once, and another instance republishes the same `eventId`. A commit that fails after a successful send also leads to a republish. Both duplicates are safe: consumers de-duplicate by `eventId`, and the FIFO deduplication window absorbs most of them.
 *   **No dead-letter state.** An event records an outcome that is already committed, so it is retried forever (backoff capped at 5 minutes). `outbox_lag_seconds` and `outbox_sender_faults_total` expose a stuck event.
 *   **Destination.** `wagering-events.fifo`, `MessageGroupId = wallet_id`, `MessageDeduplicationId = eventId`.
@@ -463,6 +466,7 @@ In chronological order. A revised decision is not deleted: it is marked **Supers
 | 34 | HTTP concurrency verification (task 07), listed below this table. | Decided |
 | 35 | Reversals and the pending-reference worker (task 08), listed below this table. | Decided |
 | 36 | SQS consumption with the inbox, retries, and the DLQ (task 09), listed below this table. | Decided |
+| 37 | Concurrent outbox publishing (task 10), listed below this table. | Decided |
 
 Decision 29 settled these points:
 
@@ -543,3 +547,16 @@ Decision 36 settled these points:
     *   The race where HTTP commits between the SQS lookup and the lock is placed by holding the wallet lock, queueing the HTTP request on it, then the SQS delivery, and releasing.
     *   With two concurrent deliveries of one `messageId` and different payloads, either may win; the spec checks that the other one is the DLQ message.
     *   `parallel-wallets` and `out-of-order` send half of their operations over SQS; in `out-of-order`, each bet goes over the other channel than its reversal. `hot-wallet` adds one SQS bet per quiet wallet.
+
+Decision 37 settled these points:
+
+*   **Batch entry IDs.** The `SendMessageBatch` entry `Id` is the entry's position. SQS restricts batch IDs, and the `eventId` stays the deduplication ID.
+*   **Unanswered entries.** An entry missing from both `Successful` and `Failed` counts as a failed send and is rescheduled, never as published.
+*   **Failure reasons.** The broker's reason, cut to 500 characters, is kept in `last_error`. The sender-fault log line carries the event's IDs and type only, because the broker's text can quote the body.
+*   **Fault point.** `crash-after-send` sends `SIGKILL` once `SendMessageBatch` returns, before the results are recorded, so the rows stay unpublished with no attempt counted.
+*   **Tests.**
+    *   Every spawned process now runs the publisher, and the shared `wagering_test` database had a backlog of about 41,000 unpublished events from earlier runs. Each test process therefore marks earlier events as published once before its first spec, and the outbox specs do the same before their in-process tests. That way each spec's publishers claim its own events first.
+    *   `concurrent-publishers` commits the 300 events from a process without the publisher. Then the crashing process starts alone, sends the first batch, and dies; the spec reads that batch from the queue. Then the two publishers start together, so four distinct PIDs take part.
+    *   MiniStack's FIFO deduplication window drops the republished batch, so no duplicate reaches the queue in that run. The spec simulates a republish after the window by resending the crashed batch under new deduplication IDs, and checks that a reader that removes duplicates by `eventId` still sees each event once.
+    *   The hot-wallet burst lasts under half a second, which is shorter than the publisher's idle poll. So `hot-wallet` asserts that every event of the burst and the quiet wallets is published within 15 s, with the `sqs` circuit closed and no sender fault, rather than that events arrive while the burst runs.
+    *   `WagerTransactionFailed` needs an unexpected error at the reference TTL, so it is covered by the application and domain specs, not over the wire.
