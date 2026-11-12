@@ -1,12 +1,7 @@
 import { InboxMessage } from '../../domain/messaging/inbox-message.js';
-import type { WalletLedgerEntry } from '../../domain/ledger/wallet-ledger-entry.js';
 import { Money, type MoneyProps } from '../../domain/money/money.js';
 import { settle } from '../../domain/settlement/settle.js';
-import {
-  type SubmittableKind,
-  WagerTransactionKind,
-} from '../../domain/transaction/transaction-kind.js';
-import { WagerTransactionStatus } from '../../domain/transaction/transaction-status.js';
+import type { SubmittableKind } from '../../domain/transaction/transaction-kind.js';
 import { WagerTransaction } from '../../domain/transaction/wager-transaction.js';
 import {
   ExternalTransactionIdConflict,
@@ -25,6 +20,7 @@ import type { RequestContext } from '../ports/request-context.js';
 import type { Telemetry } from '../ports/telemetry.js';
 import type { TxContext, UnitOfWork } from '../ports/unit-of-work.js';
 import { applyOutcome } from './apply-outcome.js';
+import { resolveReference } from './resolve-reference.js';
 import { toTransactionView } from './wager-queries.js';
 
 /** The validated core operation (§7), the same for HTTP and SQS. */
@@ -82,18 +78,6 @@ class AlreadyStored extends Error {
     super('the operation is already stored');
   }
 }
-
-type ResolvedReference = {
-  readonly reference: WagerTransaction | null;
-  readonly referenceEntry: WalletLedgerEntry | null;
-  readonly existingReversal: WagerTransaction | null;
-};
-
-const NO_REFERENCE: ResolvedReference = {
-  reference: null,
-  referenceEntry: null,
-  existingReversal: null,
-};
 
 /**
  * Submits one provider operation (§10): identities first, then the domain
@@ -249,7 +233,7 @@ export class SubmitWagerTransaction {
       correlationId: command.correlationId,
       at,
     });
-    const resolved = await this.resolveReference(tx, transaction);
+    const resolved = await resolveReference(tx, transaction);
     const decision = settle({
       transaction,
       wallet,
@@ -317,31 +301,6 @@ export class SubmitWagerTransaction {
       );
     }
     return { transaction, duplicate: true };
-  }
-
-  /** D4 input: the reference, its entry for a `ROLLBACK`, and its successful reversal. */
-  private async resolveReference(
-    tx: TxContext,
-    transaction: WagerTransaction,
-  ): Promise<ResolvedReference> {
-    const { providerId, referenceExternalTransactionId } = transaction;
-    if (providerId === null || referenceExternalTransactionId === null) {
-      return NO_REFERENCE;
-    }
-    const reference = await tx.transactions.findByExternalId(
-      providerId,
-      referenceExternalTransactionId,
-    );
-    if (reference === null) return NO_REFERENCE;
-    const referenceEntry =
-      transaction.kind === WagerTransactionKind.Rollback &&
-      reference.status === WagerTransactionStatus.Processed
-        ? await tx.ledger.findByTransactionId(reference.id)
-        : null;
-    const existingReversal = await tx.transactions.findSuccessfulReversal(
-      reference.id,
-    );
-    return { reference, referenceEntry, existingReversal };
   }
 
   /** Step 3: after an identity race, the committed winner decides. */
