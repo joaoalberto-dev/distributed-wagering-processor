@@ -2,6 +2,7 @@ import {
   DeleteMessageCommand,
   GetQueueAttributesCommand,
   ReceiveMessageCommand,
+  SendMessageBatchCommand,
   SendMessageCommand,
 } from '@aws-sdk/client-sqs';
 import type { WagerBody } from './factories.js';
@@ -89,6 +90,31 @@ export class TestQueues {
     );
     if (MessageId === undefined) throw new Error('SQS returned no MessageId');
     return MessageId;
+  }
+
+  /**
+   * Sends several messages in one call, in order, to one group, so they are
+   * all visible before the consumer's next receive.
+   */
+  async sendBatch(
+    messages: readonly (Envelope | string)[],
+    groupId: string,
+  ): Promise<void> {
+    const { Failed } = await this.infrastructure.sqs.send(
+      new SendMessageBatchCommand({
+        QueueUrl: this.infrastructure.queueUrls.input,
+        Entries: messages.map((message, index) => ({
+          Id: String(index),
+          MessageBody:
+            typeof message === 'string' ? message : JSON.stringify(message),
+          MessageGroupId: groupId,
+          MessageDeduplicationId: Bun.randomUUIDv7(),
+        })),
+      }),
+    );
+    if (Failed !== undefined && Failed.length > 0) {
+      throw new Error(`SQS refused ${Failed.length} batch entries`);
+    }
   }
 
   async counts(queue: 'input' | 'deadLetter' = 'input'): Promise<QueueCounts> {
