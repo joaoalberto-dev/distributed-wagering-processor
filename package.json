@@ -20,7 +20,10 @@
     "test": "bun test ./src/",
     "test:watch": "bun --watch test ./src/",
     "test:cov": "bun test --coverage --coverage-reporter=text --coverage-reporter=lcov ./src/",
-    "test:debug": "bun --inspect-brk test ./src/"
+    "test:debug": "bun --inspect-brk test ./src/",
+    "test:integration": "nest build && bun test --timeout 60000 ./test/integration/",
+    "test:concurrency": "nest build && bun test --timeout 180000 ./test/concurrency/",
+    "test:all": "bun run test && bun run test:integration && bun run test:concurrency"
   },
   "dependencies": {
     "@aws-sdk/client-sqs": "3.1167.0",
