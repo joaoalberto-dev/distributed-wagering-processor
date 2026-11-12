@@ -1,5 +1,9 @@
 import type { CircuitState } from '@nestjs/resilience';
 import { Counter, Gauge, Histogram, Registry } from 'prom-client';
+import type {
+  DlqReason,
+  RetryClass,
+} from '../../application/messaging/process-wager-message.js';
 import type { Channel, Telemetry } from '../../application/ports/telemetry.js';
 import type {
   BulkheadGroup,
@@ -83,6 +87,16 @@ export class Metrics implements Telemetry, PolicyListener {
     'outbox_sender_faults_total',
     'Outbox entries refused by SQS as malformed',
   );
+  readonly #sqsRetries = this.#counter(
+    'sqs_retries_total',
+    'SQS messages backed off for another receive, by error class',
+    ['error_class'],
+  );
+  readonly #dlqMoves = this.#counter(
+    'sqs_dlq_moves_total',
+    'SQS messages moved to the DLQ by the application, by reason',
+    ['reason'],
+  );
   readonly #bulkheadRejections = this.#counter(
     'bulkhead_rejections_total',
     'Calls refused by a full bulkhead, by route group',
@@ -146,6 +160,14 @@ export class Metrics implements Telemetry, PolicyListener {
   outboxPublishAttempt(result: 'ok' | 'retry' | 'sender-fault'): void {
     this.#publishAttempts.inc({ result });
     if (result === 'sender-fault') this.#senderFaults.inc();
+  }
+
+  /** Raised by the SQS consumer, not through the application's port. */
+  sqsRetry(errorClass: RetryClass): void {
+    this.#sqsRetries.inc({ error_class: errorClass });
+  }
+  sqsDlqMove(reason: DlqReason): void {
+    this.#dlqMoves.inc({ reason });
   }
 
   bulkheadRejected(group: BulkheadGroup): void {

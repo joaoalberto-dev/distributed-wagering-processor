@@ -9,6 +9,8 @@ describe('Metrics', () => {
     metrics.outboxPublishAttempt('sender-fault');
     metrics.bulkheadRejected('http');
     metrics.processingDuration('http', 0.02);
+    metrics.sqsRetry('contention');
+    metrics.sqsDlqMove('RETRY_BUDGET_EXHAUSTED');
 
     const text = await metrics.render();
     expect(text).toContain(
@@ -24,6 +26,10 @@ describe('Metrics', () => {
     expect(text).toContain('bulkhead_rejections_total{group="http"} 1');
     expect(text).toContain(
       'wager_processing_duration_seconds_bucket{le="0.025",channel="http"} 1',
+    );
+    expect(text).toContain('sqs_retries_total{error_class="contention"} 1');
+    expect(text).toContain(
+      'sqs_dlq_moves_total{reason="RETRY_BUDGET_EXHAUSTED"} 1',
     );
     expect(metrics.contentType).toContain('text/plain');
   });
