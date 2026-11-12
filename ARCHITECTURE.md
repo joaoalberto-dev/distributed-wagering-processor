@@ -316,7 +316,80 @@ The envelope is an abstract `IntegrationEvent<T>` with one subclass per event, c
     *   They assert distinct PIDs.
     *   Clients retry `503` with the same key.
     *   Every financial scenario ends by reconciling every wallet it touched.
-*   The test matrix (scenario, channel, processes, fault point, assertions) and the requirement-to-test table are added here when the tests land (task 13).
+
+### Test matrix (challenge §13, concurrency)
+
+Every concurrency spec starts its own processes from the build and asserts that their PIDs are distinct.
+
+| # | Scenario | Channel | Processes | Fault point | Key assertions | Spec |
+|---|---|---|---|---|---|---|
+| 1 | Same bet 50 times in parallel | HTTP | 3 | — | one debit; one transaction ID; the same balance snapshot in every answer | `duplicate-bet` |
+| 2 | Two bets of 80.00 on 100.00 (challenge §8) | HTTP | 3 (the bets go to 2 of them) | — | one `PROCESSED`, one `INSUFFICIENT_FUNDS`; balance 20.00; one debit | `balance-contention` |
+| 3 | 30 wallets × 20 bets in parallel | HTTP + SQS | 3 | — | every bet processed; exact balance and version; every wallet reconciles | `parallel-wallets` |
+| 4 | At least 3 processes | all | ≥ 3 | — | distinct PIDs, asserted by the cluster helper in every spec | all |
+| 5 | Consumer killed after commit, before the ack | SQS | 3 | `crash-after-commit` | a survivor's `inbox_duplicates_total` grows by 1; queue, in-flight, and DLQ empty; one ledger entry, one inbox row | `crash-after-commit` |
+| 6 | Two publishers on one outbox | outbox | 2, plus 1 killed after its send | `crash-after-send` | all 300 events published; the interrupted batch keeps its `eventId`s; no row published twice by the two | `concurrent-publishers` |
+| 7 | 20 reversals before their bets | HTTP + SQS | 3 | — | `202`, then `PROCESSED` through the wake-up; each bet reversed once | `out-of-order` |
+| 8 | `SIGKILL` of every process under 500 mixed operations, then 3 new processes | HTTP + SQS | 3 + 3 | `SIGKILL` of all | within 60 s: no pending reference, no unpublished event, empty queue and DLQ; exact balance and version; every wallet reconciles | `restart-recovery` |
+
+Beyond the eight scenarios:
+
+| Scenario | Spec | Key assertions |
+|---|---|---|
+| Hot wallet: 200 bets on one wallet beside 10 quiet wallets | `hot-wallet` | the excess is shed with `503` and nothing is stored for it; the quiet wallets complete; the `postgres` circuit stays closed |
+| 20 credits of 100.00 with 999.99 of headroom | `ceiling-credits` | 9 processed, 11 `BALANCE_LIMIT_EXCEEDED`; the ceiling is never passed |
+| SQS unreachable for 60 s under HTTP traffic | `sqs-outage` | HTTP keeps committing; no receive budget spent; every event published afterwards with its original `eventId` |
+| 20 reconciliations during 300 writes | `reconcile-during-writes` | every one answers `consistent: true` with no issues |
+
+### Challenge §13 checklist
+
+| Layer | Required by challenge §13 | Specs |
+|---|---|---|
+| Unit | `Money` operations and validation (scale, rounding, invalid input) | `money.spec`, `primitives.spec` |
+| Unit | `Wallet` invariants | `wallet.spec` |
+| Unit | `BET`, `WIN`, `LOSS`, `REFUND`, `ROLLBACK` rules | `settle.spec`, `transaction-kind.spec`, `wager-transaction.spec`, `wager-operation.schema.spec` |
+| Unit | Currency conflict | `settle.spec` (`CURRENCY_MISMATCH`) |
+| Unit | Idempotency key with a different payload | `payload-hash.spec`, `submit-wager-transaction.spec` |
+| Integration | Migrations and constraints | `migrations`, `schema-constraints`, `commit-consistency` |
+| Integration | Atomicity of wallet, ledger, inbox, and outbox | `atomicity`, `unit-of-work` |
+| Integration | Inbox and redelivery | `inbox-redelivery`, `sqs-ordering` |
+| Integration | Concurrent publishers on one outbox | `outbox-publisher`; `concurrent-publishers` across processes |
+| Integration | Retry and DLQ | `sqs-dlq`, `sqs-ordering`; `sqs-retry-policy.spec` for the budgets |
+| Integration | Recovery after a restart | `shutdown` (a second process takes over the released messages); `crash-after-commit` and `restart-recovery` across processes |
+| All | `wallet.balance` equals the balance rebuilt from the ledger | `expectReconciled` at the end of every spec that moves money |
+
+### Requirement-to-test table
+
+| Challenge section | Requirement | Specs |
+|---|---|---|
+| §5 | No `number` for money; no negative balance; no direct balance update; append-only ledger | `money.spec`, `schema-constraints`, `commit-consistency` |
+| §6.1 | `Money` scale, rounding, and invalid input | `money.spec`, `primitives.spec` |
+| §6.2 | `Wallet` invariants and version | `wallet.spec` |
+| §6.3 | Transaction states and factories | `wager-transaction.spec`, `schema-constraints` |
+| §6.4 | Immutable ledger entry | `wallet-ledger-entry.spec`, `schema-constraints` |
+| §6.5 | Inbox and outbox | `inbox-redelivery`, `outbox-publisher`, `outbox-message.spec` |
+| §7 | Kind rules, references, and failure codes | `settle.spec`, `reversals`, `wagering-http` |
+| §7.1 | Out-of-order references | `resolve-pending-references.spec`, `pending-references`, `out-of-order` |
+| §8 | Per-wallet serialization and the mandatory scenario | `balance-contention`, `duplicate-bet`, `hot-wallet` |
+| §9 | Routes, statuses, reconciliation, and health | `wallets-http`, `wagering-http`, `reconciliation`, `operational`, `observability` |
+| §10 | SQS idempotency, retry, and DLQ | `inbox-redelivery`, `sqs-dlq`, `sqs-ordering`, `crash-after-commit`, `sqs-outage` |
+| §11 | Outbox and the minimum events | `outbox-publisher`, `concurrent-publishers`, `wager-events.spec` |
+| §12 | Logs and the seven metric categories | `observability`, `metrics.spec`, `json-logger.spec` |
+| §13 | Unit, integration, and concurrency layers | the checklist above |
+
+Unit specs are under `src/` next to their source; the others are `test/integration/<name>.spec.ts` and `test/concurrency/<name>.spec.ts`. `platform.spec` keeps the platform checks of task 02 (MikroORM 7 and `pg` on Bun, MiniStack's FIFO behavior, `@nestjs/resilience`, `transaction_timeout`, the app role's grants) as a regression test.
+
+### Test evidence
+
+A full run of `bun run test:all` on 2026-11-12, from commit `2f58ab8` on an 8-core AMD Ryzen 7 5700X3D with 60 GiB of memory, Linux, Bun 1.4.4, and the compose PostgreSQL 17.11 and MiniStack 1.5.39:
+
+| Layer | Specs | Tests | Result | Test time |
+|---|---|---|---|---|
+| Unit | 35 | 449 | all pass | 0.4 s |
+| Integration | 20 | 223 | all pass | 69 s |
+| Concurrency | 11 | 11 | all pass | 100 s |
+
+The whole command, with the two builds, took 2 min 56 s. Task 12 required `test:all` to pass three times in a row; it did on the same machine the same day, with the same test counts and integration and concurrency times between 67 s and 103 s. The first run for this record failed once, in `outbox-publisher`, on a race in the spec itself; decision 40 describes it and its fix.
 
 ## 8. Observability
 
