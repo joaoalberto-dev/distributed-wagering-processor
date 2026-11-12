@@ -3,6 +3,7 @@ import { brl, keyOf, openWalletBody, type WagerBody } from './factories.js';
 import { HttpClient, type HttpResponse } from './http-client.js';
 import type { Infrastructure } from './infrastructure.js';
 import { type SpawnedApp, spawnApp } from './spawn-app.js';
+import { waitFor } from './wait-for.js';
 
 export type ClusterOptions = {
   /** Number of processes; the concurrency layer always runs three or more. */
@@ -153,4 +154,41 @@ export async function metricValue(
     .split('\n')
     .find((l) => l.startsWith(`${sample} `));
   return line === undefined ? 0 : Number(line.split(' ').at(-1));
+}
+
+/** A transaction resource, as the query routes answer it. */
+export type StoredTransaction = {
+  readonly id: string;
+  readonly status: string;
+  readonly failureCode?: string;
+  readonly referenceTransactionId?: string;
+};
+
+/**
+ * Waits until `body`'s operation is stored, for one sent over SQS, and
+ * until `ready` accepts it (by default any status but `PENDING_REFERENCE`).
+ */
+export function storedOf(
+  client: HttpClient,
+  body: WagerBody,
+  ready: (transaction: StoredTransaction) => boolean = (t) =>
+    t.status !== 'PENDING_REFERENCE',
+  timeoutMs = 60_000,
+): Promise<StoredTransaction> {
+  return waitFor(
+    async () => {
+      const response = await client.get<StoredTransaction>(
+        `/providers/${body.providerId}/wagering/transactions/${body.externalTransactionId}`,
+        { retryUnavailableMs: RETRY_UNAVAILABLE_MS },
+      );
+      return response.status === 200 && ready(response.body)
+        ? response.body
+        : undefined;
+    },
+    {
+      timeoutMs,
+      intervalMs: 100,
+      description: `${body.externalTransactionId} to be stored`,
+    },
+  );
 }
