@@ -1,7 +1,8 @@
 /**
  * Reconciliation over HTTP against a spawned process: consistent wallets,
- * and a balance corrupted behind the triggers' back.
+ * and a balance, version, or chain corrupted behind the triggers' back.
  */
+import type { SQL } from 'bun';
 import { afterAll, beforeAll, describe, expect, it } from 'bun:test';
 import { appendWins, type Row, useDatabase } from '../support/database.js';
 import { brl, openWalletBody } from '../support/factories.js';
@@ -39,16 +40,31 @@ async function open(amount: string): Promise<string> {
 const reconcile = (walletId: string) =>
   http.post<ReconciliationBody>(`/wallets/${walletId}/reconciliation`);
 
-async function divergences(): Promise<number> {
+async function divergences(issue = 'BALANCE_MISMATCH'): Promise<number> {
   const metrics = await http.get<string>('/metrics');
   const line = metrics.body
     .split('\n')
     .find((l) =>
-      l.startsWith(
-        'reconciliation_divergences_total{issue="BALANCE_MISMATCH"}',
-      ),
+      l.startsWith(`reconciliation_divergences_total{issue="${issue}"}`),
     );
   return line === undefined ? 0 : Number(line.split(' ').at(-1));
+}
+
+/** Runs `corrupt` as the owner with the triggers disabled. */
+async function bypassTriggers(
+  corrupt: (tx: SQL) => Promise<unknown>,
+): Promise<void> {
+  await database.owner.begin(async (tx) => {
+    await tx`SET LOCAL session_replication_role = replica`;
+    await corrupt(tx);
+  });
+}
+
+/** A wallet opened at 100.00 with three 1.00 wins: versions 1 to 4, at 103.00. */
+async function walletWithFourEntries(): Promise<string> {
+  const walletId = await open('100.00');
+  await appendWins(database.app, walletId, 3);
+  return walletId;
 }
 
 describe('POST /wallets/:walletId/reconciliation', () => {
@@ -121,5 +137,94 @@ describe('POST /wallets/:walletId/reconciliation', () => {
     const [row] = (await database.owner`
       SELECT balance::text AS balance FROM wallets WHERE id = ${walletId}`) as Row[];
     expect(row).toEqual({ balance: '90.00' });
+  });
+});
+
+describe('reconciliation issues beyond the balance', () => {
+  it('flags a stored version that is not the highest entry version', async () => {
+    const walletId = await walletWithFourEntries();
+    const before = await divergences('VERSION_MISMATCH');
+    await bypassTriggers(
+      (tx) => tx`UPDATE wallets SET version = 9 WHERE id = ${walletId}`,
+    );
+
+    const response = await reconcile(walletId);
+    expect(response.body).toMatchObject({
+      storedBalance: brl('103.00'),
+      calculatedBalance: brl('103.00'),
+      consistent: false,
+      checkedEntries: 4,
+      issues: [
+        {
+          code: 'VERSION_MISMATCH',
+          details: { storedVersion: 9, expectedVersion: 4 },
+        },
+      ],
+    });
+    expect(await divergences('VERSION_MISMATCH')).toBe(before + 1);
+  });
+
+  it('flags missing versions in the chain', async () => {
+    const walletId = await walletWithFourEntries();
+    const before = await divergences('CHAIN_GAP');
+    await bypassTriggers(async (tx) => {
+      await tx`UPDATE wallet_ledger_entries SET wallet_version = 6
+                WHERE wallet_id = ${walletId} AND wallet_version = 4`;
+      await tx`UPDATE wallets SET version = 6 WHERE id = ${walletId}`;
+    });
+
+    const response = await reconcile(walletId);
+    expect(response.body).toMatchObject({
+      consistent: false,
+      checkedEntries: 4,
+      issues: [
+        {
+          code: 'CHAIN_GAP',
+          details: {
+            expectedFirstVersion: 1,
+            firstVersion: 1,
+            missingVersions: [4, 5],
+          },
+        },
+      ],
+    });
+    expect(await divergences('CHAIN_GAP')).toBe(before + 1);
+  });
+
+  it('flags an entry whose balance_before does not continue the previous entry', async () => {
+    const walletId = await walletWithFourEntries();
+    const before = await divergences('CHAIN_BREAK');
+    // Shifting both balances keeps the entry's arithmetic and the ledger sum.
+    await bypassTriggers(
+      (tx) => tx`UPDATE wallet_ledger_entries
+                    SET balance_before = balance_before + 5,
+                        balance_after = balance_after + 5
+                  WHERE wallet_id = ${walletId} AND wallet_version = 3`,
+    );
+
+    const response = await reconcile(walletId);
+    expect(response.body).toMatchObject({
+      storedBalance: brl('103.00'),
+      calculatedBalance: brl('103.00'),
+      consistent: false,
+      checkedEntries: 4,
+      issues: [
+        {
+          code: 'CHAIN_BREAK',
+          details: { startsAtZero: true, brokenLinks: 2 },
+        },
+      ],
+    });
+    expect(await divergences('CHAIN_BREAK')).toBe(before + 1);
+
+    const warning = await waitFor(
+      () =>
+        app
+          .output()
+          .split('\n')
+          .find((line) => line.includes(walletId) && line.includes('"warn"')),
+      { timeoutMs: 2000, description: 'the divergence warning' },
+    );
+    expect(JSON.parse(warning)).toMatchObject({ issues: ['CHAIN_BREAK'] });
   });
 });
