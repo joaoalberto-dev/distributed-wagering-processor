@@ -4,8 +4,9 @@
  * shrunk so the burst overflows it deterministically. The burst's excess is
  * shed with 503 and nothing is stored for it; the quiet wallets' bets, one
  * over HTTP and one over SQS each, still complete; the postgres circuit
- * stays closed, because contention is not an outage. Publisher assertions
- * join with task 10.
+ * stays closed, because contention is not an outage. The publisher keeps up:
+ * every event of the burst and of the quiet wallets is published soon after,
+ * with the sqs circuit closed and no sender fault.
  */
 import { describe, expect, it } from 'bun:test';
 import {
@@ -19,6 +20,7 @@ import {
   walletOf,
 } from '../support/cluster.js';
 import { brl, keyOf, wagerBody } from '../support/factories.js';
+import { EventReader } from '../support/event-reader.js';
 import { useInfrastructure } from '../support/infrastructure.js';
 import { expectReconciled } from '../support/reconcile.js';
 import { envelopeOf, TestQueues } from '../support/sqs.js';
@@ -106,9 +108,30 @@ describe('200 concurrent bets on one wallet beside 10 quiet wallets', () => {
     }
     expect(rejections).toBeGreaterThan(0);
 
-    const expected = centsToAmount(50_000 - processed.length * 100);
+    // Two events per opening and per processed bet: shed requests publish nothing.
+    const reader = new EventReader(infrastructure);
+    const expected = new Map([
+      [hot.id, 2 + 2 * processed.length],
+      ...quiet.map((wallet): [string, number] => [wallet.id, 2 + 2 + 2]),
+    ]);
+    await reader.waitUntil(
+      () =>
+        [...expected].every(
+          ([walletId, count]) => reader.eventsOf(walletId).length === count,
+        ),
+      15_000,
+      'every event of the burst and the quiet wallets',
+    );
+    for (const client of cluster.clients) {
+      expect(await metricValue(client, 'circuit_state{dependency="sqs"}')).toBe(
+        0,
+      );
+      expect(await metricValue(client, 'outbox_sender_faults_total')).toBe(0);
+    }
+
+    const balance = centsToAmount(50_000 - processed.length * 100);
     expect((await walletOf(cluster.client(1), hot.id)).balance).toEqual(
-      brl(expected),
+      brl(balance),
     );
     expect(await ledgerDirections(cluster.client(2), hot.id)).toHaveLength(
       1 + processed.length,
