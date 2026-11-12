@@ -29,14 +29,6 @@ export class AsyncLocalRequestContext implements RequestContext {
     const store = this.#storage.getStore();
     if (store !== undefined) Object.assign(store, defined(fields));
   }
-
-  /**
-   * Opens a scope for the rest of the current synchronous call and the
-   * asynchronous work it starts, for middleware that cannot wrap `next()`.
-   */
-  enter(fields: LogFieldUpdate): void {
-    this.#storage.enterWith({ ...this.get(), ...defined(fields) });
-  }
 }
 
 function defined(fields: LogFieldUpdate): LogFields {
