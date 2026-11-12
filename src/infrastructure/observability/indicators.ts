@@ -7,7 +7,8 @@ import { LATEST_MIGRATION } from '../persistence/schema-version.js';
 /** Each readiness check gives up after 1 s (tuning table). */
 export const READINESS_CHECK_TIMEOUT_MS = 1000;
 
-async function within<T>(ms: number, work: Promise<T>): Promise<T> {
+/** `work`, or a rejection once `ms` have passed. */
+export async function within<T>(ms: number, work: Promise<T>): Promise<T> {
   let timer: ReturnType<typeof setTimeout> | undefined;
   const timeout = new Promise<never>((_, reject) => {
     timer = setTimeout(
