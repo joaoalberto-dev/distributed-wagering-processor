@@ -76,7 +76,8 @@ type Handled = 'done' | 'backoff';
  *     delivers the group again in order. After a DLQ move the group goes on.
  * *   A message is deleted only after its outcome committed.
  * *   While a needed circuit is open, nothing is received, so an outage
- *     spends no receive budget.
+ *     spends no receive budget. While one is half-open, the receive is a
+ *     short poll, so the probe settles at once.
  * *   `stop` aborts the long poll, lets each group finish the message in
  *     progress within the drain time, and releases the rest.
  */
@@ -159,14 +160,18 @@ export class SqsWagerConsumer {
   }
 
   async #receive(max: number, signal: AbortSignal): Promise<Message[]> {
-    const { sqs, guard, queues, settings } = this.#options;
+    const { sqs, guard, queues, settings, circuits } = this.#options;
     const queueUrl = await queues.url('input');
+    // A half-open circuit's probe must settle at once: a long poll on an
+    // empty queue would keep the circuit half-open, refusing every other
+    // call of the process, for the whole poll.
+    const probing = circuits.some((circuit) => circuit.state === 'half-open');
     const output = await guard(() =>
       sqs.send(
         new ReceiveMessageCommand({
           QueueUrl: queueUrl,
           MaxNumberOfMessages: Math.min(max, 10),
-          WaitTimeSeconds: settings.waitTimeSeconds,
+          WaitTimeSeconds: probing ? 0 : settings.waitTimeSeconds,
           MessageSystemAttributeNames: [
             'ApproximateReceiveCount',
             'MessageGroupId',

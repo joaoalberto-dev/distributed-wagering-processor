@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it } from 'bun:test';
 import type { Message, SQSClient } from '@aws-sdk/client-sqs';
+import type { CircuitState } from '@nestjs/resilience';
 import { FakeRequestContext } from '../../../test/support/fakes/fake-request-context.js';
 import { RecordingLogger } from '../../../test/support/fakes/recording-logger.js';
 import { waitFor } from '../../../test/support/wait-for.js';
@@ -96,7 +97,7 @@ const ACK: MessageOutcome = { kind: 'ack', reason: 'processed' };
 
 function setup(
   script: Script = () => Promise.resolve(ACK),
-  circuits: readonly { readonly state: 'open' | 'closed' }[] = [],
+  circuits: readonly { readonly state: CircuitState }[] = [],
 ) {
   const sqs = new FakeSqs();
   const processed: string[] = [];
@@ -313,5 +314,13 @@ describe('SqsWagerConsumer', () => {
     expect(sqs.calls).toEqual([]);
     circuit.state = 'closed';
     await until(() => sqs.calls.some((c) => c.name === 'ReceiveMessage'));
+  });
+
+  it('short-polls while a circuit is half-open, so the probe settles at once', async () => {
+    const { sqs, consumer } = setup(undefined, [{ state: 'half-open' }]);
+    start(consumer);
+    await until(() => sqs.calls.some((c) => c.name === 'ReceiveMessage'));
+    const receive = sqs.calls.find((c) => c.name === 'ReceiveMessage');
+    expect(receive?.input.WaitTimeSeconds).toBe(0);
   });
 });
