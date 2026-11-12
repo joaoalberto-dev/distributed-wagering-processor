@@ -21,6 +21,11 @@ export function startInProcess(
   infrastructure: Infrastructure,
   options: InProcessOptions = {},
 ): Promise<Application> {
-  const config = loadConfig({ ...infrastructure.env, ...options.env });
+  // Quiet by default: the startup warnings belong to spawned processes' output.
+  const config = loadConfig({
+    ...infrastructure.env,
+    LOG_LEVEL: 'error',
+    ...options.env,
+  });
   return buildApplication(config, options.overrides);
 }
