@@ -9,6 +9,7 @@ import type { Application } from './container.js';
 import { HttpModule } from './http.module.js';
 import { ObservabilityModule } from './observability.module.js';
 import { PersistenceModule } from './persistence.module.js';
+import { WorkersModule } from './workers.module.js';
 
 export const APP_CONFIG = Symbol('APP_CONFIG');
 
@@ -22,6 +23,7 @@ export class AppModule implements NestModule {
         PersistenceModule.register(app),
         ObservabilityModule.register(app),
         HttpModule.register(app),
+        WorkersModule.register(),
       ],
       providers: [{ provide: APP_CONFIG, useValue: app.config }],
       exports: [APP_CONFIG],

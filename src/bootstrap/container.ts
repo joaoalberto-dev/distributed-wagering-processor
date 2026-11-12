@@ -6,6 +6,10 @@ import type { ProviderIdentityPort } from '../application/ports/provider-identit
 import type { QueryPort } from '../application/ports/queries.js';
 import type { RequestContext } from '../application/ports/request-context.js';
 import type { UnitOfWork } from '../application/ports/unit-of-work.js';
+import {
+  REFERENCE_WORKER_DEFAULTS,
+  ResolvePendingReferences,
+} from '../application/wagering/resolve-pending-references.js';
 import { SubmitWagerTransaction } from '../application/wagering/submit-wager-transaction.js';
 import { WagerQueries } from '../application/wagering/wager-queries.js';
 import { OpenWallet } from '../application/wallets/open-wallet.js';
@@ -30,11 +34,15 @@ import {
 } from '../infrastructure/persistence/mikro-orm-unit-of-work.js';
 import { PERSISTENCE_RECORDS } from '../infrastructure/persistence/records/index.js';
 import { SqlQueryPort } from '../infrastructure/persistence/sql-query-port.js';
+import { PollingLoop } from '../infrastructure/polling/polling-loop.js';
 import {
   createPolicies,
   listenToPolicies,
   type Policies,
 } from '../infrastructure/resilience/policies.js';
+
+/** The pending-reference worker's wait when a cycle found nothing (tuning table). */
+const REFERENCE_WORKER_IDLE_POLL_MS = 500;
 
 /** Replacements for in-process tests; anything left out is the production adapter. */
 export type ApplicationOverrides = {
@@ -61,6 +69,9 @@ export type Application = {
   readonly reconcileWallet: ReconcileWallet;
   readonly submitWagerTransaction: SubmitWagerTransaction;
   readonly wagerQueries: WagerQueries;
+  readonly resolvePendingReferences: ResolvePendingReferences;
+  /** Not started here: the workers module starts it when `REFERENCE_WORKER_ENABLED`. */
+  readonly referenceWorker: PollingLoop;
   close(): Promise<void>;
 };
 
@@ -99,6 +110,26 @@ export async function buildApplication(
   const providerIdentity = new TrustAllProviderIdentity(
     appLogger('Authentication'),
   );
+  const referenceTtlMs = config.referenceTtlSeconds * 1000;
+  const workerLogger = appLogger('ReferenceWorker');
+  const resolvePendingReferences = new ResolvePendingReferences(
+    unitOfWork,
+    clock,
+    ids,
+    metrics,
+    workerLogger,
+    requestContext,
+    { ...REFERENCE_WORKER_DEFAULTS, referenceTtlMs },
+  );
+  const referenceWorker = new PollingLoop({
+    cycle: () => resolvePendingReferences.runCycle(),
+    idlePollMs: REFERENCE_WORKER_IDLE_POLL_MS,
+    circuits: [policies.circuits.postgres],
+    onError: (error) =>
+      workerLogger.warn('reference worker cycle failed', {
+        reason: error instanceof Error ? error.name : 'unknown',
+      }),
+  });
 
   return {
     config,
@@ -126,10 +157,13 @@ export async function buildApplication(
       appLogger('Wagering'),
       providerIdentity,
       requestContext,
-      { referenceTtlMs: config.referenceTtlSeconds * 1000 },
+      { referenceTtlMs },
     ),
     wagerQueries: new WagerQueries(queries),
+    resolvePendingReferences,
+    referenceWorker,
     close: async () => {
+      await referenceWorker.stop();
       stopListening();
       await orm.close(true);
     },
