@@ -85,11 +85,13 @@ The application connects as `wagering_app`, which has only `SELECT`, `INSERT`, a
 *   **One successful reversal.** A partial unique index on `reference_transaction_id` where the status is `PROCESSED` and the kind is `REFUND` or `ROLLBACK`.
 *   **Immutability.** Triggers block `UPDATE`, `DELETE`, and `TRUNCATE` on the ledger; changes to identity columns; and any change to a terminal transaction. A trigger allows only the persisted lifecycle edges.
 *   **Ledger arithmetic.** `balance_after = balance_before ± amount` by direction, per row.
+*   **Named violations.** Every trigger raises SQLSTATE `23000` and reports its own name as the constraint, so a refused write names its rule the way a `CHECK` does. Row triggers run before `CHECK` constraints, so the lifecycle trigger refuses a `PENDING` insert first; the status checks stay as a second barrier for writes that bypass triggers.
 *   **Commit-time consistency.** Deferred constraint triggers check at `COMMIT`:
     *   **tip:** each touched wallet's balance and version equal its latest entry's `balance_after` and `wallet_version` (0 and 1 with no entries);
     *   **chain:** each new entry continues the previous one (`balance_before` equals the previous `balance_after`, versions without gaps);
     *   **transaction:** each new entry belongs to a `PROCESSED` transaction of a balance-moving kind, with the same amount and currency;
-    *   **direction:** the entry's direction matches the kind; a `ROLLBACK` is the opposite of its reference's entry.
+    *   **direction:** the entry's direction matches the kind; a `ROLLBACK` is the opposite of its reference's entry;
+    *   **entry:** each transaction that becomes `PROCESSED` with a balance-moving kind has its ledger entry, so an operation cannot be recorded as applied without moving the balance.
 
     With the tip and the chain checked at every commit, "stored balance = sum of the ledger" holds by induction for every write that goes through the triggers, including manual SQL as `wagering_app`.
 
@@ -275,7 +277,8 @@ The envelope is an abstract `IntegrationEvent<T>` with one subclass per event, c
 *   **Ports.** `UnitOfWork`; the repositories for wallets, transactions, ledger, inbox, and outbox; `ReconciliationReader`; `QueryPort`; `EventPublisher`; `ProviderIdentityPort`; `Clock`; `IdGenerator`; `Telemetry`; `RequestContext`.
 *   **MikroORM usage.**
     *   Persistence records (`defineEntity`, no decorators) are separate from the domain classes, with explicit mappers, because ORM hydration would bypass `rehydrate`.
-    *   Each operation uses the entity manager of its own `em.transactional()` call, with one ordered `flush`; the global context is disabled. State is loaded after the lock, with `refresh`.
+    *   Each operation uses the entity manager of its own `em.transactional()` call, with one ordered `flush` at commit (`FlushMode.COMMIT`, so a query never flushes early); the global context is disabled. State is loaded after the lock, with `refresh`.
+    *   Records declare their foreign keys as many-to-one relations mapped to the plain ID, only so the flush inserts the wallet, then the transaction, then the entry.
     *   `concurrencyCheck` on the transaction status guards worker transitions.
     *   `version: true` is not used, because the wallet version is a domain rule.
     *   Raw SQL is used only where nothing is loaded: the inbox insert, the outbox claim, the wake-up, the worker's scheduling updates, and the reconciliation aggregates.
@@ -442,6 +445,7 @@ In chronological order. A revised decision is not deleted: it is marked **Supers
 | 28 | The `nest start` script is removed; development runs the source on Bun, and production runs the `tsc` build on Bun. | Decided |
 | 29 | Design review outcome, listed below this table. | Decided |
 | 30 | Domain implementation (task 03): `referenceReversedBy` flags only a `WIN` or `LOSS` decided after its `BET` was reversed, because terminal results are never rewritten; `REFERENCE_ALREADY_REVERSED` also carries `details.referenceReversedBy`. This refines the "both arrival orders" wording of the task 03 and task 08 test lists in the design document. | Decided |
+| 31 | Persistence implementation (task 04), listed below this table. | Decided |
 
 Decision 29 settled these points:
 
@@ -459,3 +463,13 @@ Decision 29 settled these points:
     *   `src/contracts` for the inbound schemas.
 *   **Tests.** A separate test database, a TCP proxy for outages, and per-spec queues.
 *   **Scope.** A Core and Stretch split.
+
+Decision 31 settled these points:
+
+*   **Trigger errors.** Triggers raise SQLSTATE `23000` with the trigger name as the constraint. `TRUNCATE` is refused by trigger on every table except `inbox`, not only on the ledger.
+*   **Checks and triggers.** Row triggers run before `CHECK` constraints, so the status checks are a second barrier, tested with triggers bypassed.
+*   **Flush.** The ORM flushes only at commit; records declare relations mapped to the plain ID so inserts follow the foreign keys.
+*   **Pending times.** The repository reads the next attempt and the expiry from the database clock, rounded to milliseconds like the columns, before the insert, because the insert itself happens at the flush.
+*   **Wallet conflict.** The error classifier raises `WalletAlreadyExists` without the ID; the use case re-reads and fills it in.
+*   **Processed without an entry.** A fifth deferred check on `wager_transactions` refuses a `PROCESSED` transaction of a balance-moving kind without its ledger entry. Without it, a manual insert could record an operation as applied without moving the balance, and reconciliation would not see it, because the balance still equals the ledger.
+*   **Indexes.** The ledger `(wallet_id, wallet_version)` lookup uses the unique constraint's index; no duplicate index is created.
