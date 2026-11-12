@@ -236,6 +236,7 @@ The envelope is an abstract `IntegrationEvent<T>` with one subclass per event, c
 *   **Wake-up.** When a `BET`, `WIN`, or `REFUND` becomes terminal, the same transaction sets the due time of its pending dependents to now. Nothing cascades inline, so the lock stays short; the worker applies them on its next cycle (at most about 1 s when idle).
 *   **Backoff and TTL.** Attempts back off from 1 s to 5 minutes. After 24 hours (configurable), the worker decides once more: an absent reference gives `REFERENCE_NOT_FOUND` and a still-pending one gives `REFERENCE_NOT_READY`.
 *   **`FAILED`.** If that final attempt throws an unexpected error, the row becomes `FAILED` with `PROCESSING_FAILED`, written by the same persistence step as every other outcome. Transient errors never cause `FAILED`.
+*   **Other errors.** Contention skips the row, which stays due and uncounted. An outage ends the cycle, and the polling loop waits while the `postgres` circuit is open. An unexpected error before the TTL counts the attempt and reschedules the row.
 
 ### Crash, outage, and shutdown
 
@@ -454,6 +455,7 @@ In chronological order. A revised decision is not deleted: it is marked **Supers
 | 32 | Wallets, reconciliation, and the operational base (task 05), listed below this table. | Decided |
 | 33 | Basic processing and persistent idempotency (task 06), listed below this table. | Decided |
 | 34 | HTTP concurrency verification (task 07), listed below this table. | Decided |
+| 35 | Reversals and the pending-reference worker (task 08), listed below this table. | Decided |
 
 Decision 29 settled these points:
 
@@ -507,3 +509,13 @@ Decision 34 settled these points:
 *   **Identity race in the unlocked lookup.** The duplicate-bet scenario (50 copies over 3 processes) showed copies answered with `409 EXTERNAL_TRANSACTION_ID_CONFLICT`: the key read missed the winner, which committed before the external-ID read found it. The decision table now applies to the row found, judged by its key, so that copy is a replay. A unit test places the commit between the two reads.
 *   **Shedding in the hot-wallet test.** The test shrinks the HTTP bulkhead to 4 running and 4 queued per process, so a 200-request burst overflows it on every run. The burst is sent once without resending `503`s; the quiet wallets' requests resend `503` with the same key and must all be processed.
 *   **Shared cluster helper.** `test/support/cluster.ts` starts the processes of a concurrency spec, asserts distinct PIDs, and stops them after the spec.
+
+Decision 35 settled these points:
+
+*   **Two units of work per attempt.** The worker first reads the row without a lock, to learn its wallet and whether its TTL is reached (which picks `SKIP LOCKED` or a blocking lock). The attempt itself runs in a new unit of work: the ORM's identity map would return a row loaded before the lock unchanged, so the row is re-checked and loaded only after the wallet lock, on a fresh fork.
+*   **Recovery reads the row again.** After an unexpected error, a new unit of work re-checks the row with the database clock: not due any more, it is left alone; before the TTL, it is rescheduled with the attempt counted; at the TTL, a third unit of work locks the wallet, confirms the row is still pending, and writes `FAILED`. A failed recovery leaves the row due for the next cycle.
+*   **Attempt metrics.** `reference_attempts_total{outcome}` counts a busy wallet, a window another worker already handled, and contention as `skipped`, and an unexpected error that was rescheduled as `wait`. Worker decisions also count in `wager_transactions_total` with `channel="worker"`.
+*   **Shared reference resolution.** Submission and the worker read the reference, its ledger entry for a `ROLLBACK`, and its successful reversal through one function, so both feed `settle()` the same input.
+*   **Polling loop.** A failed cycle is logged and followed by the idle wait, like an empty one. The loop is built in the container and started by `WorkersModule` when `REFERENCE_WORKER_ENABLED`; it stops in `beforeApplicationShutdown`, so the cycle in progress finishes before the pool closes.
+*   **Due-row count.** The first version aliased its subquery `window`, a reserved word in PostgreSQL, so every select failed. Nothing ran the worker's reads against the database until this task; an integration test now covers `selectDue` and `recheck`.
+*   **Exact arrival order in tests.** The reversals spec runs a process without the worker and runs worker cycles in process, so a `WIN` that arrives before its `BET` is decided only after the `REFUND`, as decision 30 requires for the flag. The two-worker spec polls the row and asserts that each change of `attempts` is one step, taken after the previous window opened.
