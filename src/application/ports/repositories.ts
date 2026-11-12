@@ -1,3 +1,4 @@
+import type { LedgerFigures } from '../../domain/reconciliation/reconciliation-report.js';
 import type { WalletLedgerEntry } from '../../domain/ledger/wallet-ledger-entry.js';
 import type { InboxMessage } from '../../domain/messaging/inbox-message.js';
 import type { OutboxMessage } from '../../domain/messaging/outbox-message.js';
@@ -96,21 +97,8 @@ export interface OutboxRepository {
   scheduleRetry(id: string, backoffMs: number, error: string): Promise<void>;
 }
 
-/** Aggregates of one wallet's ledger, computed in SQL without loading the entries. */
-export type LedgerAggregate = {
-  readonly storedBalance: string;
-  readonly currency: string;
-  readonly storedVersion: number;
-  /** Credits minus debits, in minor units. */
-  readonly ledgerSumMinor: bigint;
-  readonly entryCount: number;
-  readonly minVersion: number | null;
-  readonly maxVersion: number | null;
-  readonly hasOpening: boolean;
-  readonly firstBalanceBefore: string | null;
-  /** Entries whose `balance_before` differs from the previous entry's `balance_after`. */
-  readonly chainBreaks: number;
-};
+/** One wallet's ledger aggregates: exactly what the report needs (§14). */
+export type LedgerAggregate = LedgerFigures;
 
 export interface ReconciliationReader {
   aggregate(walletId: string): Promise<LedgerAggregate | null>;

@@ -339,6 +339,14 @@ class Reconciliation implements ReconciliationReader {
       }
     });
     const versions = entries.map((e) => e.walletVersion);
+    const hasOpening = entries.some(
+      (e) => this.store.transactions.get(e.transactionId)?.kind === 'OPENING',
+    );
+    const missingVersions: number[] = [];
+    const present = new Set(versions);
+    for (let v = hasOpening ? 1 : 2; v <= Math.max(0, ...versions); v++) {
+      if (!present.has(v)) missingVersions.push(v);
+    }
     return Promise.resolve({
       storedBalance: wallet.balance.toProps().amount,
       currency: wallet.currency,
@@ -347,9 +355,8 @@ class Reconciliation implements ReconciliationReader {
       entryCount: entries.length,
       minVersion: versions.length === 0 ? null : Math.min(...versions),
       maxVersion: versions.length === 0 ? null : Math.max(...versions),
-      hasOpening: entries.some(
-        (e) => this.store.transactions.get(e.transactionId)?.kind === 'OPENING',
-      ),
+      hasOpening,
+      missingVersions,
       firstBalanceBefore: entries[0]?.balanceBefore.toProps().amount ?? null,
       chainBreaks,
     });

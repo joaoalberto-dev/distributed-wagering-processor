@@ -14,9 +14,13 @@ type AggregateRow = {
   min_version: number | null;
   max_version: number | null;
   has_opening: boolean;
+  missing_versions: string;
   first_balance_before: string | null;
   chain_breaks: number;
 };
+
+/** At most this many missing versions are listed in a `CHAIN_GAP`. */
+const MISSING_VERSIONS_LIMIT = 100;
 
 /**
  * One wallet's ledger aggregates in a single statement: no entry is loaded
@@ -46,6 +50,13 @@ export class SqlReconciliationReader implements ReconciliationReader {
               (SELECT min(wallet_version) FROM entries) AS min_version,
               (SELECT max(wallet_version) FROM entries) AS max_version,
               (SELECT COALESCE(bool_or(kind = 'OPENING'), false) FROM entries) AS has_opening,
+              (SELECT COALESCE(string_agg(v::text, ',' ORDER BY v), '') FROM (
+                 SELECT v FROM generate_series(
+                          (SELECT CASE WHEN bool_or(kind = 'OPENING') THEN 1 ELSE 2 END FROM entries),
+                          (SELECT max(wallet_version) FROM entries)) AS v
+                  WHERE NOT EXISTS (SELECT 1 FROM entries WHERE wallet_version = v)
+                  ORDER BY v
+                  LIMIT ${MISSING_VERSIONS_LIMIT}) AS missing) AS missing_versions,
               (SELECT balance_before::text FROM entries ORDER BY wallet_version LIMIT 1)
                 AS first_balance_before,
               (SELECT count(*)::int FROM entries
@@ -64,6 +75,10 @@ export class SqlReconciliationReader implements ReconciliationReader {
       minVersion: row.min_version,
       maxVersion: row.max_version,
       hasOpening: row.has_opening,
+      missingVersions:
+        row.missing_versions === ''
+          ? []
+          : row.missing_versions.split(',').map(Number),
       firstBalanceBefore: row.first_balance_before,
       chainBreaks: row.chain_breaks,
     };
