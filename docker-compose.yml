@@ -1,0 +1,83 @@
+name: wagering
+
+x-service-env: &service-env
+  NODE_ENV: production
+  DATABASE_URL: postgres://wagering_app:wagering_app@postgres:5432/wagering
+  DATABASE_OWNER_URL: postgres://wagering_owner:wagering_owner@postgres:5432/wagering
+  AWS_REGION: us-east-1
+  AWS_ENDPOINT_URL: http://ministack:4566
+  AWS_ACCESS_KEY_ID: test
+  AWS_SECRET_ACCESS_KEY: test
+
+x-app: &app
+  build: .
+  image: wagering-app:local
+  profiles: [app]
+  init: true
+  stop_grace_period: 30s
+  depends_on:
+    setup:
+      condition: service_completed_successfully
+
+services:
+  postgres:
+    image: postgres:17.11
+    command: postgres -c max_connections=200
+    environment:
+      POSTGRES_USER: wagering_owner
+      POSTGRES_PASSWORD: wagering_owner
+      POSTGRES_DB: wagering
+    ports:
+      - '5432:5432'
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U wagering_owner -d wagering']
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  ministack:
+    image: ministackorg/ministack:1.5.39
+    ports:
+      - '4566:4566'
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - python -c "import urllib.request as r; r.urlopen('http://localhost:4566/_ministack/health')"
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  setup:
+    build: .
+    image: wagering-app:local
+    command: ['bun', 'scripts/setup.ts']
+    environment: *service-env
+    depends_on:
+      postgres:
+        condition: service_healthy
+      ministack:
+        condition: service_healthy
+
+  app-1:
+    <<: *app
+    environment:
+      <<: *service-env
+      INSTANCE_ID: app-1
+    ports:
+      - '3001:3000'
+
+  app-2:
+    <<: *app
+    environment:
+      <<: *service-env
+      INSTANCE_ID: app-2
+    ports:
+      - '3002:3000'
+
+  app-3:
+    <<: *app
+    environment:
+      <<: *service-env
+      INSTANCE_ID: app-3
+    ports:
+      - '3003:3000'
