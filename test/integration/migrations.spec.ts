@@ -61,7 +61,7 @@ async function routines(): Promise<string[]> {
 describe('migrations', () => {
   const names = migrations.map((migration) => migration.name);
 
-  it('lists the six migrations in order, the last one being LATEST_MIGRATION', () => {
+  it('lists the seven migrations in order, the last one being LATEST_MIGRATION', () => {
     expect(names).toEqual([
       'Migration0001Wallets',
       'Migration0002WagerTransactions',
@@ -69,6 +69,7 @@ describe('migrations', () => {
       'Migration0004InboxOutbox',
       'Migration0005CommitConsistency',
       'Migration0006WorkerIndexes',
+      'Migration0007RejectionSnapshotCurrency',
     ]);
     expect(names.at(-1)).toBe(LATEST_MIGRATION);
   });

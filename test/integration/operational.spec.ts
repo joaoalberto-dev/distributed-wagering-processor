@@ -117,7 +117,10 @@ describe('health', () => {
     expect(response.body.status).toBe('ok');
     expect(response.body.info).toEqual({
       postgres: { status: 'up' },
-      migrations: { status: 'up', latest: 'Migration0006WorkerIndexes' },
+      migrations: {
+        status: 'up',
+        latest: 'Migration0007RejectionSnapshotCurrency',
+      },
     });
   });
 });

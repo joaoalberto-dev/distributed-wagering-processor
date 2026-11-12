@@ -104,6 +104,17 @@ describe('wallets', () => {
   ];
   it.each(cases)('rejects with %s', expectViolation);
 
+  it('accepts a CURRENCY_MISMATCH rejection whose snapshot is in the wallet currency', async () => {
+    await rolledBack((tx) =>
+      withTransaction(tx, {
+        currency: 'USD',
+        status: 'REJECTED',
+        failure_code: 'CURRENCY_MISMATCH',
+        result_balance_currency: 'BRL',
+      }),
+    );
+  });
+
   it.each([
     ['player_id', newId()],
     ['currency', 'USD'],
@@ -205,6 +216,15 @@ describe('wager_transactions', () => {
       (tx) => withTransaction(tx, { result_balance_currency: 'USD' }),
     ],
     [
+      'wager_transactions_result_check',
+      (tx) =>
+        withTransaction(tx, {
+          status: 'REJECTED',
+          failure_code: 'CURRENCY_MISMATCH',
+          result_balance_currency: null,
+        }),
+    ],
+    [
       'wager_transactions_scheduling_check',
       async (tx) => {
         const wallet = walletRow();
@@ -302,6 +322,17 @@ describe('wager_transactions', () => {
     ],
   ];
   it.each(cases)('rejects with %s', expectViolation);
+
+  it('accepts a CURRENCY_MISMATCH rejection whose snapshot is in the wallet currency', async () => {
+    await rolledBack((tx) =>
+      withTransaction(tx, {
+        currency: 'USD',
+        status: 'REJECTED',
+        failure_code: 'CURRENCY_MISMATCH',
+        result_balance_currency: 'BRL',
+      }),
+    );
+  });
 
   it.each([
     ['wager_transactions_status_persisted_check', 'PENDING'],
@@ -472,6 +503,17 @@ describe('wallet_ledger_entries', () => {
   ];
   it.each(cases)('rejects with %s', expectViolation);
 
+  it('accepts a CURRENCY_MISMATCH rejection whose snapshot is in the wallet currency', async () => {
+    await rolledBack((tx) =>
+      withTransaction(tx, {
+        currency: 'USD',
+        status: 'REJECTED',
+        failure_code: 'CURRENCY_MISMATCH',
+        result_balance_currency: 'BRL',
+      }),
+    );
+  });
+
   it('refuses an update of a committed entry', async () => {
     const { opening } = await openWallet(database.owner);
     await expectViolation(
@@ -538,6 +580,17 @@ describe('outbox', () => {
     ],
   ];
   it.each(cases)('rejects with %s', expectViolation);
+
+  it('accepts a CURRENCY_MISMATCH rejection whose snapshot is in the wallet currency', async () => {
+    await rolledBack((tx) =>
+      withTransaction(tx, {
+        currency: 'USD',
+        status: 'REJECTED',
+        failure_code: 'CURRENCY_MISMATCH',
+        result_balance_currency: 'BRL',
+      }),
+    );
+  });
 
   describe('a published event', () => {
     const published = outboxRow();
