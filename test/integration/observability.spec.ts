@@ -128,10 +128,10 @@ describe('metrics', () => {
   it('records a lock wait in its bucket and counts lock timeouts', async () => {
     const wallet = await open();
     const fast = 'wallet_lock_wait_seconds_bucket{le="0.1",channel="http"}';
-    const slow = 'wallet_lock_wait_seconds_bucket{le="0.25",channel="http"}';
+    const all = 'wallet_lock_wait_seconds_count{channel="http"}';
     const timeouts = 'wallet_lock_timeouts_total';
-    const [fastBefore, slowBefore, timeoutsBefore] = await Promise.all(
-      [fast, slow, timeouts].map((s) => metric(s)),
+    const [fastBefore, allBefore, timeoutsBefore] = await Promise.all(
+      [fast, all, timeouts].map((s) => metric(s)),
     );
 
     // Released after 150 ms: a wait within the 300 ms lock timeout.
@@ -141,8 +141,9 @@ describe('metrics', () => {
       return { waiting: pending };
     });
     expect((await waiting).status).toBe(200);
+    // Counted once, above the 0.1 s bucket.
+    expect(await metric(all)).toBe((allBefore as number) + 1);
     expect(await metric(fast)).toBe(fastBefore as number);
-    expect(await metric(slow)).toBe((slowBefore as number) + 1);
 
     // Held past three attempts: each attempt times out.
     const blocked = wagerBody(wallet, { money: brl(BET) });
