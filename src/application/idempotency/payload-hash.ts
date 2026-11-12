@@ -10,7 +10,8 @@ export type HashedOperation = {
   readonly gameId: string;
   readonly kind: string;
   readonly money: { readonly amount: string; readonly currency: string };
-  readonly referenceExternalTransactionId?: string;
+  /** Absent and `undefined` hash the same: the field is omitted. */
+  readonly referenceExternalTransactionId?: string | undefined;
 };
 
 /** The label of the algorithm below, stored and compared as part of the hash. */

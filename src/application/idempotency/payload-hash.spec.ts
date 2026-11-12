@@ -46,10 +46,7 @@ describe('payloadHash', () => {
   it('does not hash an absent optional field, and hashes a present one', () => {
     const win = { ...OPERATION, kind: 'WIN' };
     expect(
-      payloadHash({
-        ...win,
-        referenceExternalTransactionId: undefined,
-      } as never),
+      payloadHash({ ...win, referenceExternalTransactionId: undefined }),
     ).toBe(payloadHash(win));
     expect(
       payloadHash({ ...win, referenceExternalTransactionId: 'transaction-1' }),
