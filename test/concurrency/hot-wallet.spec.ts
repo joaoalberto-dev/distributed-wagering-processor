@@ -2,15 +2,17 @@
  * A hot wallet next to quiet ones: 200 bets hit one wallet at once over three
  * processes while 10 other wallets receive one bet each. The bulkhead is
  * shrunk so the burst overflows it deterministically. The burst's excess is
- * shed with 503 and nothing is stored for it; the quiet wallets' bets still
- * complete; the postgres circuit stays closed, because contention is not an
- * outage. SQS and publisher assertions join with tasks 09 and 10.
+ * shed with 503 and nothing is stored for it; the quiet wallets' bets, one
+ * over HTTP and one over SQS each, still complete; the postgres circuit
+ * stays closed, because contention is not an outage. Publisher assertions
+ * join with task 10.
  */
 import { describe, expect, it } from 'bun:test';
 import {
   ledgerDirections,
   metricValue,
   openWallet,
+  storedOf,
   submit,
   useCluster,
   type WagerResult,
@@ -19,6 +21,7 @@ import {
 import { brl, keyOf, wagerBody } from '../support/factories.js';
 import { useInfrastructure } from '../support/infrastructure.js';
 import { expectReconciled } from '../support/reconcile.js';
+import { envelopeOf, TestQueues } from '../support/sqs.js';
 
 const infrastructure = useInfrastructure('hot-wallet');
 const cluster = useCluster(infrastructure, {
@@ -53,17 +56,30 @@ describe('200 concurrent bets on one wallet beside 10 quiet wallets', () => {
     const quietBets = quiet.map((wallet, i) =>
       submit(cluster.client(i), wagerBody(wallet)),
     );
+    const queues = new TestQueues(infrastructure);
+    const quietSqsBets = quiet.map((wallet) => wagerBody(wallet));
     const [hotResponses, quietResponses] = await Promise.all([
       Promise.all(burst),
       Promise.all(quietBets),
+      Promise.all(quietSqsBets.map((bet) => queues.send(envelopeOf(bet)))),
     ]);
 
     for (const response of quietResponses) {
       expect({ status: response.status, body: response.body }).toMatchObject({
         status: 200,
-        body: { status: 'PROCESSED', balance: brl('75.00') },
+        body: { status: 'PROCESSED' },
       });
     }
+    for (const [i, bet] of quietSqsBets.entries()) {
+      expect((await storedOf(cluster.client(i), bet)).status).toBe('PROCESSED');
+    }
+    for (const [i, wallet] of quiet.entries()) {
+      expect((await walletOf(cluster.client(i), wallet.id)).balance).toEqual(
+        brl('50.00'),
+      );
+    }
+    await queues.drained();
+    expect(await queues.deadLetters()).toEqual([]);
 
     const statuses = new Set(hotResponses.map((r) => r.status));
     expect([...statuses].filter((s) => s !== 200 && s !== 503)).toEqual([]);
