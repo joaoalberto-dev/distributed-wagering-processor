@@ -1,8 +1,8 @@
 name: CI
 
 on:
+  # Every branch, so a branch is checked before its local merge into main.
   push:
-    branches: [main]
   pull_request:
 
 permissions:
