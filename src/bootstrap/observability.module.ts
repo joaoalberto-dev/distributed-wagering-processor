@@ -8,6 +8,7 @@ import { TELEMETRY } from '../application/ports/telemetry.js';
 import { DatabaseGauges } from '../infrastructure/observability/database-gauges.js';
 import { HealthController } from '../infrastructure/observability/health.controller.js';
 import { ReadinessIndicators } from '../infrastructure/observability/indicators.js';
+import { ShutdownState } from '../infrastructure/observability/shutdown-state.js';
 import { MetricsController } from '../infrastructure/observability/metrics.controller.js';
 import { Metrics } from '../infrastructure/observability/metrics.js';
 import type { Application } from './container.js';
@@ -27,6 +28,7 @@ export class ObservabilityModule {
       providers: [
         { provide: Metrics, useValue: app.metrics },
         { provide: DatabaseGauges, useValue: app.gauges },
+        ShutdownState,
         { provide: TELEMETRY, useValue: app.metrics },
         { provide: REQUEST_CONTEXT, useValue: app.requestContext },
         { provide: ID_GENERATOR, useValue: app.ids },

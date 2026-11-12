@@ -40,6 +40,11 @@ export class ReadinessIndicators {
     private readonly timeoutMs = READINESS_CHECK_TIMEOUT_MS,
   ) {}
 
+  /** Asked only once shutdown began: the instance is draining. */
+  draining() {
+    return this.health.check('shutdown').down({ message: 'draining' });
+  }
+
   /** PostgreSQL answers `SELECT 1`. */
   async postgres() {
     const check = this.health.check('postgres');
