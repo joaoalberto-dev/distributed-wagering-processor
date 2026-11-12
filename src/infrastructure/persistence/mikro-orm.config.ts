@@ -1,4 +1,8 @@
-import type { EntitySchema, MigrationObject } from '@mikro-orm/core';
+import {
+  type EntitySchema,
+  FlushMode,
+  type MigrationObject,
+} from '@mikro-orm/core';
 import { defineConfig, type Options } from '@mikro-orm/postgresql';
 import type { AppConfig } from '../config/app-config.js';
 
@@ -26,6 +30,8 @@ export function createOrmConfig(
     entities,
     discovery: { warnWhenNoEntities: false },
     allowGlobalContext: false,
+    // One flush per unit of work, at commit: a query never flushes pending changes early.
+    flushMode: FlushMode.COMMIT,
     ensureDatabase: false,
     pool: { min: 0, max: overrides.poolMax ?? config.database.poolMax },
     driverOptions: {
