@@ -5,7 +5,7 @@ import {
   OutageError,
   WalletAlreadyExists,
 } from '../../application/errors.js';
-import { classifyPgError } from './pg-error-classifier.js';
+import { classifyPgError, timeoutOf } from './pg-error-classifier.js';
 
 function pgError(
   code: string,
@@ -112,5 +112,20 @@ describe('classifyPgError', () => {
     const plain = new Error('something else');
     expect(classifyPgError(plain)).toBe(plain);
     expect(classifyPgError('text')).toBe('text');
+  });
+});
+
+describe('timeoutOf', () => {
+  it('names the lock and statement timeouts the metrics count', () => {
+    expect(timeoutOf(pgError('55P03'))).toBe('lock');
+    expect(timeoutOf(pgError('57014'))).toBe('statement');
+  });
+
+  it.each(['40P01', '25P04', '08006', '23505'])('ignores %s', (code) => {
+    expect(timeoutOf(pgError(code))).toBeNull();
+  });
+
+  it('ignores non-errors', () => {
+    expect(timeoutOf('55P03')).toBeNull();
   });
 });

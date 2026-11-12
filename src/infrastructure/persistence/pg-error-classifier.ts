@@ -111,3 +111,17 @@ export function classifyPgError(error: unknown): unknown {
   }
   return error;
 }
+
+/** A database timeout counted on its own (metric table). */
+export type DatabaseTimeout = 'lock' | 'statement';
+
+const TIMEOUT_STATES: Readonly<Record<string, DatabaseTimeout>> = {
+  '55P03': 'lock',
+  '57014': 'statement',
+};
+
+/** `lock` for `55P03`, `statement` for `57014`, otherwise `null`. */
+export function timeoutOf(error: unknown): DatabaseTimeout | null {
+  if (!(error instanceof Error)) return null;
+  return TIMEOUT_STATES[field(error as DriverErrorShape, 'code')] ?? null;
+}
