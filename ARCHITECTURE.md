@@ -149,6 +149,7 @@ A round may have several `WIN`s, and a processed `REFUND` may itself be rolled b
 *   **Lock-order invariant.**
     *   Every lock taken after the wallet lock is on that wallet's rows or on a newly inserted row.
     *   The inbox key wait happens before the wallet lock.
+    *   One exception, which never waits: before a pending row's TTL, the reference worker claims the row with `SKIP LOCKED` and then the wallet with `SKIP LOCKED`. A worker that holds the row never waits for anything, so it cannot close a cycle; at the TTL it takes the wallet first, like every other writer.
     *   So no lock cycle can form. A deadlock (`40P01`) is still classified as contention as a safety net.
 *   **Contention is bounded.** `lock_timeout` 2 s, `statement_timeout` 5 s, `transaction_timeout` 10 s. On HTTP a contention error is retried up to twice in process with jitter, then answered with `503` and `Retry-After`. Duplicate requests that arrive together wait for the lock and then receive the stored result's replay.
 *   **Hot wallet.**
@@ -260,6 +261,7 @@ The envelope is an abstract `IntegrationEvent<T>` with one subclass per event, c
 *   **Wake-up.** When a `BET`, `WIN`, or `REFUND` becomes terminal, the same transaction sets the due time of its pending dependents to now. Nothing cascades inline, so the lock stays short; the worker applies them on its next cycle (at most about 1 s when idle).
 *   **Backoff and TTL.** Attempts back off from 1 s to 5 minutes. After 24 hours (configurable), the worker decides once more: an absent reference gives `REFERENCE_NOT_FOUND` and a still-pending one gives `REFERENCE_NOT_READY`.
 *   **`FAILED`.** If that final attempt throws an unexpected error, the row becomes `FAILED` with `PROCESSING_FAILED`, written by the same persistence step as every other outcome. Transient errors never cause `FAILED`.
+*   **Two workers on one row.** Workers coordinate without a lease. Before the TTL, an attempt first claims its row with `FOR UPDATE SKIP LOCKED`: a second worker that selected the same row finds it taken and skips it. Only the worker that holds the row and finds the wallet busy pushes the row back by 1 s, uncounted, so a push-back never cancels another worker's attempt in progress.
 *   **Other errors.** Contention skips the row, which stays due and uncounted. An outage ends the cycle, and the polling loop waits while the `postgres` circuit is open. An unexpected error before the TTL counts the attempt and reschedules the row.
 
 ### Crash, outage, and shutdown
@@ -384,7 +386,7 @@ Beyond the eight scenarios:
 | §6.4 | Immutable ledger entry | `wallet-ledger-entry.spec`, `schema-constraints` |
 | §6.5 | Inbox and outbox | `inbox-redelivery`, `outbox-publisher`, `outbox-message.spec` |
 | §7 | Kind rules, references, and failure codes | `settle.spec`, `reversals`, `wagering-http` |
-| §7.1 | Out-of-order references | `resolve-pending-references.spec`, `pending-references`, `out-of-order` |
+| §7.1 | Out-of-order references | `resolve-pending-references.spec`, `pending-references`, `worker-race`, `out-of-order` |
 | §8 | Per-wallet serialization and the mandatory scenario | `balance-contention`, `duplicate-bet`, `hot-wallet` |
 | §9 | Routes, statuses, reconciliation, and health | `wallets-http`, `wagering-http`, `reconciliation`, `operational`, `observability` |
 | §10 | SQS idempotency, retry, and DLQ | `inbox-redelivery`, `sqs-dlq`, `sqs-ordering`, `crash-after-commit`, `sqs-outage`, `redrive-dlq` |
@@ -583,6 +585,7 @@ In chronological order. A revised decision is not deleted: it is marked **Supers
 | 39 | Recovery across multiple instances (task 12), listed below this table. | Decided |
 | 40 | Documentation and the delivery demonstration (task 13), listed below this table. | Decided; "redrive without a script" **Superseded** by 41 |
 | 41 | Stretch items (task 14), listed below this table. | Decided; refines the step 3 example of 40 |
+| 42 | The reference worker claims its row before the wallet, found by CI job 2; listed below this table. | Decided; adds an exception to the lock-order invariant of 9 |
 
 Decision 29 settled these points:
 
@@ -712,3 +715,10 @@ Decision 41 settled these points:
 *   **The redrive deduplication ID.** The script derives it from the DLQ message's SQS `MessageId` instead of the envelope `messageId` with a counter (the example in decision 40). A counter repeated inside five minutes would let SQS drop a message the script then deletes from the DLQ; the DLQ `MessageId` changes with every DLQ copy and stays the same only for a resend of one copy, which is already in the input queue. Messages SQS moved itself, with no `failureReason`, are not redriven: nothing says why they failed.
 *   **The demo script.** `bun run demo` checks its own outcomes and exits with the number of failed checks, so it doubles as a smoke test of the three containers. It sends HTTP steps round-robin and resends a `503` or a refused connection to the next instance with the same key. The crash step waits for Docker to report the killed container stopped before starting it again, because `docker compose start` does nothing while the container still reads as running.
 *   **CI job 2.** PostgreSQL and MiniStack run as service containers. A service container takes no command, so `max_connections = 200` is set with `ALTER SYSTEM` and a restart, and MiniStack's health is polled in a step instead of a container health command.
+
+Decision 42 settled these points:
+
+*   **The defect.** Two workers could select the same due row. The one that locked the wallet went on with its attempt; the other found the wallet locked, took it for a busy wallet, and pushed the row back by 1 s. Under READ COMMITTED the first worker's reschedule then saw a row that was no longer due and dropped its attempt. The two workers poll on the same period, so once they met they kept meeting: the attempt count stayed put and the row was retried about every second instead of backing off. Money was never at risk: a decision still applied, and the TTL still decided the row. The timing-based `pending-references` spec caught it on CI runners, whose slower round trips widen the window, and not on a development machine.
+*   **The fix.** Before the TTL, an attempt claims its row with `FOR UPDATE SKIP LOCKED` before the wallet, also with `SKIP LOCKED`; a worker that cannot claim the row skips it without touching it. At the TTL the order stays wallet first, then the row with a waiting `FOR UPDATE`. The lock-order invariant gains an exception for the non-waiting order, since a worker that holds the row never waits.
+*   **The regression test.** `worker-race` forces the interleaving against PostgreSQL instead of relying on timing: two in-process applications, and the second worker's whole cycle runs while the first holds the wallet lock. It failed on every run before the fix. The in-memory fake cannot show the defect, because each fake unit of work works on its own copy and never sees another's commit; the unit spec covers the claim decision only.
+*   **The rule it leaves.** When an attempt decides under a lock and then writes with a "still due" condition, a competing path must not be able to change that condition without the same lock.
