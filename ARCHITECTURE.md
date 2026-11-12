@@ -581,7 +581,8 @@ In chronological order. A revised decision is not deleted: it is marked **Supers
 | 37 | Concurrent outbox publishing (task 10), listed below this table. | Decided |
 | 38 | Observability and health checks (task 11), listed below this table. | Decided |
 | 39 | Recovery across multiple instances (task 12), listed below this table. | Decided |
-| 40 | Documentation and the delivery demonstration (task 13), listed below this table. | Decided |
+| 40 | Documentation and the delivery demonstration (task 13), listed below this table. | Decided; "redrive without a script" **Superseded** by 41 |
+| 41 | Stretch items (task 14), listed below this table. | Decided; refines the step 3 example of 40 |
 
 Decision 29 settled these points:
 
@@ -703,3 +704,11 @@ Decision 40 settled these points:
 *   **Redrive without a script.** The redrive procedure in §5 names the SQS calls and their parameters instead of commands of one tool, so it holds for the AWS CLI, an SDK, or the console. It sends each message as a new one with a new deduplication ID and deletes the DLQ copy last, because reusing the original ID inside the deduplication window loses the message silently.
 *   **The demonstration.** The `README.md` demo uses only `curl` and Bun against the three containers of the `app` profile, sending each step to a different instance. Every identifier carries a per-run prefix, so the demo can be run again without resetting the database.
 *   **A race in a test.** The first full run for the evidence failed once in `outbox-publisher`: the publisher sends before it commits, so the spec could see every event on the queue while the last rows were still unpublished. The spec now waits for the rows, as a consumer would; the publisher is unchanged.
+
+Decision 41 settled these points:
+
+*   **Reconciliation details.** `CHAIN_GAP` lists at most the first 100 missing versions, computed in SQL with `generate_series`, so a corrupted version far above the rest cannot make a large answer; the issue itself does not depend on the list. `CHAIN_BREAK` carries counts, not amounts, like the log line. The domain report checks all four issues from one set of aggregates, which the reader port now returns as the domain's own type.
+*   **Where the reversed-settlement counter is raised.** Next to the warning log, after the commit, in `SubmitWagerTransaction` and `ResolvePendingReferences`, not in `applyOutcome`: inside the transaction a rollback or retry would count a settlement that did not happen, and a replay never reaches either place.
+*   **The redrive deduplication ID.** The script derives it from the DLQ message's SQS `MessageId` instead of the envelope `messageId` with a counter (the example in decision 40). A counter repeated inside five minutes would let SQS drop a message the script then deletes from the DLQ; the DLQ `MessageId` changes with every DLQ copy and stays the same only for a resend of one copy, which is already in the input queue. Messages SQS moved itself, with no `failureReason`, are not redriven: nothing says why they failed.
+*   **The demo script.** `bun run demo` checks its own outcomes and exits with the number of failed checks, so it doubles as a smoke test of the three containers. It sends HTTP steps round-robin and resends a `503` or a refused connection to the next instance with the same key. The crash step waits for Docker to report the killed container stopped before starting it again, because `docker compose start` does nothing while the container still reads as running.
+*   **CI job 2.** PostgreSQL and MiniStack run as service containers. A service container takes no command, so `max_connections = 200` is set with `ALTER SYSTEM` and a restart, and MiniStack's health is polled in a step instead of a container health command.
