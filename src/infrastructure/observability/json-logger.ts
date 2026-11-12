@@ -37,3 +37,17 @@ export class NestAppLogger implements AppLogger {
     this.logger.warn(message, { ...fields }, this.context);
   }
 }
+
+const SEVERITY: readonly LogLevel[] = [
+  'fatal',
+  'error',
+  'warn',
+  'log',
+  'debug',
+  'verbose',
+];
+
+/** The configured level and every level more severe than it. */
+export function enabledLevels(level: LogLevel): LogLevel[] {
+  return SEVERITY.slice(0, SEVERITY.indexOf(level) + 1);
+}
