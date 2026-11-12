@@ -1,18 +1,35 @@
-import { type DynamicModule, Module } from '@nestjs/common';
-import type { AppConfig } from '../infrastructure/config/app-config.js';
-import { HealthController } from '../infrastructure/observability/health.controller.js';
+import {
+  type DynamicModule,
+  type MiddlewareConsumer,
+  Module,
+  type NestModule,
+} from '@nestjs/common';
+import { RequestContextMiddleware } from '../interface/http/request-context.middleware.js';
+import type { Application } from './container.js';
+import { HttpModule } from './http.module.js';
+import { ObservabilityModule } from './observability.module.js';
+import { PersistenceModule } from './persistence.module.js';
 
 export const APP_CONFIG = Symbol('APP_CONFIG');
 
 @Module({})
-export class AppModule {
-  static register(config: AppConfig): DynamicModule {
+export class AppModule implements NestModule {
+  static register(app: Application): DynamicModule {
     return {
       module: AppModule,
       global: true,
-      controllers: [HealthController],
-      providers: [{ provide: APP_CONFIG, useValue: config }],
+      imports: [
+        PersistenceModule.register(app),
+        ObservabilityModule.register(app),
+        HttpModule.register(app),
+      ],
+      providers: [{ provide: APP_CONFIG, useValue: app.config }],
       exports: [APP_CONFIG],
     };
+  }
+
+  /** Every request, operational ones included, runs in its own context. */
+  configure(consumer: MiddlewareConsumer): void {
+    consumer.apply(RequestContextMiddleware).forRoutes('*path');
   }
 }

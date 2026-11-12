@@ -1,0 +1,34 @@
+import { type DynamicModule, Module } from '@nestjs/common';
+import { APP_FILTER, APP_INTERCEPTOR, APP_PIPE } from '@nestjs/core';
+import { OpenWallet } from '../application/wallets/open-wallet.js';
+import { ReconcileWallet } from '../application/wallets/reconcile-wallet.js';
+import { ErrorFilter } from '../interface/http/error.filter.js';
+import { ContractValidationPipe } from '../interface/http/validation.js';
+import { WalletsController } from '../interface/http/wallets.controller.js';
+import { BulkheadInterceptor } from './bulkhead.interceptor.js';
+import type { Application } from './container.js';
+
+/**
+ * The HTTP contract for every route: validation, the error mapping, and the
+ * bulkheads. The business controllers are mounted only when `HTTP_ENABLED`
+ * is on; the operational endpoints are always served.
+ */
+@Module({})
+export class HttpModule {
+  static register(app: Application): DynamicModule {
+    return {
+      module: HttpModule,
+      controllers: app.config.roles.http ? [WalletsController] : [],
+      providers: [
+        { provide: APP_PIPE, useValue: new ContractValidationPipe() },
+        { provide: APP_FILTER, useValue: new ErrorFilter() },
+        {
+          provide: APP_INTERCEPTOR,
+          useValue: new BulkheadInterceptor(app.policies),
+        },
+        { provide: OpenWallet, useValue: app.openWallet },
+        { provide: ReconcileWallet, useValue: app.reconcileWallet },
+      ],
+    };
+  }
+}
