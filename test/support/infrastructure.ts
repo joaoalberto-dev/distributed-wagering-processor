@@ -7,6 +7,7 @@ import {
   loadConfig,
 } from '../../src/infrastructure/config/app-config.js';
 import { createSqsClient } from '../../src/infrastructure/messaging/sqs-client.js';
+import { settlePendingEvents } from './database.js';
 import { TEST_DATABASE, baseTestEnv } from './env.js';
 
 /** One id per test process, so queues of concurrent runs never collide. */
@@ -51,13 +52,22 @@ async function checkSqs(config: AppConfig): Promise<void> {
   }
 }
 
-/** Checks both dependencies and prepares the test database, once per process. */
+/**
+ * Checks both dependencies and prepares the test database, once per
+ * process, settling the events earlier runs left unpublished.
+ */
 function prepareOnce(env: Record<string, string>): Promise<void> {
   prepared ??= (async () => {
     const config = loadConfig(env);
     await checkPostgres(config.database.ownerUrl);
     await checkSqs(config);
     await setup({ env, database: TEST_DATABASE });
+    const owner = new SQL(config.database.ownerUrl, { max: 1 });
+    try {
+      await settlePendingEvents(owner);
+    } finally {
+      await owner.close();
+    }
   })();
   return prepared;
 }

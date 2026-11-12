@@ -38,6 +38,15 @@ export function useDatabase(infrastructure: Infrastructure): Database {
   };
 }
 
+/**
+ * Marks every unpublished event as published. Events that earlier specs or
+ * runs left behind would otherwise be published into whichever spec runs a
+ * publisher next, ahead of its own; nobody reads them. Run as the owner.
+ */
+export async function settlePendingEvents(sql: SQL): Promise<void> {
+  await sql`UPDATE outbox SET published_at = now() WHERE published_at IS NULL`;
+}
+
 export function newId(): string {
   return Bun.randomUUIDv7();
 }
