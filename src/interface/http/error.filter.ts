@@ -14,6 +14,7 @@ import {
   IdempotencyKeyConflict,
   InvalidCursor,
   OutageError,
+  TransactionNotFound,
   ValidationFailed,
   WalletAlreadyExists,
   WalletNotFound,
@@ -60,7 +61,7 @@ function mapApplicationError(error: unknown): Mapped | null {
       body: envelope(error.code, error.message),
     };
   }
-  if (error instanceof WalletNotFound) {
+  if (error instanceof WalletNotFound || error instanceof TransactionNotFound) {
     return {
       status: HttpStatus.NOT_FOUND,
       body: envelope(error.code, error.message),

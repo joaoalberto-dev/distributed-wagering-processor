@@ -35,6 +35,15 @@ export class WalletAlreadyExists extends ApplicationError {
   }
 }
 
+/** No transaction has this ID, or this provider and external ID. */
+export class TransactionNotFound extends ApplicationError {
+  readonly code = 'TRANSACTION_NOT_FOUND';
+
+  constructor() {
+    super('no such transaction');
+  }
+}
+
 /** The idempotency key was already used with another payload. */
 export class IdempotencyKeyConflict extends ApplicationError {
   readonly code = 'IDEMPOTENCY_KEY_CONFLICT';
