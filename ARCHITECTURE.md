@@ -2,7 +2,7 @@
 
 This document describes the Distributed Wagering Processor: what it guarantees, how, and at what cost. The main body describes the current design, organized by the evaluation areas of the challenge. Appendix A keeps the decision log in chronological order, including decisions that were later replaced.
 
-*   **Status:** design complete; implementation follows the tasks on the [project board](https://github.com/users/joaoalberto-dev/projects/3). Each task updates the section it touches and appends to the decision log. Where code and this document disagree, the disagreement is a bug in one of them.
+*   **Status:** every mandatory requirement is implemented and tested (tasks 01–13 on the [project board](https://github.com/users/joaoalberto-dev/projects/3)); §7 maps each requirement to its tests and records a full run. The Stretch items of task 14 are listed in §11 as not built. Where code and this document disagree, the disagreement is a bug in one of them.
 *   **Detail:** the full design, with port signatures, the schema specification, the metric table, the test harness, and the rejected alternatives (A1–A42), is in [`docs/designs/distributed-wagering-processor.md`](docs/designs/distributed-wagering-processor.md). That document is frozen; this one is canonical.
 *   **Conventions:** "challenge §N" refers to a section of [`CHALLENGE.md`](CHALLENGE.md). Money amounts are decimal strings with two places.
 
@@ -512,7 +512,10 @@ DLQ-only reasons: `UNEXPECTED_ERROR` (3rd receive) and `RETRY_BUDGET_EXHAUSTED` 
 | Writes that bypass the triggers | Ledger and balance can diverge | Reconciliation reports it and never corrects. |
 | Events retried forever | A poison event is retried every 5 minutes | Lag and fault metrics; it blocks no other event. |
 | Tables grow without bound | Storage and reconciliation time grow | Retention is a non-goal. |
-| Platform behavior on Bun (MikroORM 7, MiniStack, `@nestjs/resilience` 0.0.3) | Guarantees that depend on it fail | A platform spike test with a fallback per item (TypeORM; an earlier MiniStack tag; the same behaviors written in the project). |
+| Platform behavior on Bun (MikroORM 7, MiniStack, `@nestjs/resilience` 0.0.3) | Guarantees that depend on it fail | Every item of the platform spike passed, so no fallback was needed; `platform.spec` keeps them as a regression test for upgrades. |
+| SQS behavior is verified only against MiniStack | AWS SQS may differ in deduplication, visibility, throttling, or batch answers | The design relies only on documented SQS FIFO behavior, and `platform.spec` checks each behavior it uses; a run of the integration and concurrency layers against AWS SQS belongs before production. |
+| Tests wait on conditions with fixed limits (for example 60 s for recovery) | A much slower machine can fail a spec that would pass with more time | The limits are well above the measured times in §7; each one is named in its timeout error. |
+| No load test | Throughput, tail latency, and the instance count a given load needs are unmeasured | Out of scope (below); the metrics in §8 are what a load test would read. |
 
 ### Non-goals
 
@@ -523,7 +526,8 @@ DLQ-only reasons: `UNEXPECTED_ERROR` (3rd receive) and `RETRY_BUDGET_EXHAUSTED` 
 *   Retention of inbox and outbox rows.
 *   Implemented authentication (designed in §6).
 *   Future extensions, documented but not built: SNS fan-out, a provider registry, ledger balance checkpoints, OpenTelemetry tracing, dashboards.
-*   Load testing until every mandatory requirement is done; if built, it runs as `bun run test:load`.
+*   The Stretch items, not built: a CI job that runs the integration and concurrency layers against service containers; the reconciliation issues `VERSION_MISMATCH`, `CHAIN_GAP`, and `CHAIN_BREAK` (the commit trigger already refuses a broken chain); a `settlement_on_reversed_reference_total` metric; a demo script; and a redrive script (the manual procedure is in §5).
+*   Load testing; if built, it runs as `bun run test:load`.
 
 ## Appendix A: decision log
 
