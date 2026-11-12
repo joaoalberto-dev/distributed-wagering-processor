@@ -17,6 +17,8 @@ export type Outcome = Decision | { readonly kind: 'fail' };
 export type OutcomeContext = EventTracing & {
   /** `reference_expires_at` of a transaction that starts waiting, from now. */
   readonly referenceTtlMs: number;
+  /** The resolved reference, recorded on a processed result (the schema's same-wallet foreign key). */
+  readonly referenceTransactionId?: string;
 };
 
 /** The kinds whose terminal result can unblock a pending dependent (§11, Wake-up). */
@@ -62,6 +64,9 @@ export async function applyOutcome(
         balance: wallet.balance,
         at,
         ...(outcome.details === undefined ? {} : { details: outcome.details }),
+        ...(ctx.referenceTransactionId === undefined
+          ? {}
+          : { referenceTransactionId: ctx.referenceTransactionId }),
       });
       break;
     }

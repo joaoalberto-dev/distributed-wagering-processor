@@ -103,6 +103,20 @@ describe('applyOutcome', () => {
     expect(eventTypes()).toEqual(['WagerTransactionProcessed']);
   });
 
+  it('records the resolved reference on a processed result', async () => {
+    const reference = 'dddddddd-0000-7000-8000-000000000000';
+    ctx = { ...ctx, referenceTransactionId: reference };
+    await apply(
+      operation({ kind: 'WIN', referenceExternalTransactionId: 'ext-0' }),
+      {
+        kind: 'process',
+        effect: { direction: LedgerDirection.Credit, amount: brl('25.00') },
+      },
+    );
+    const stored = [...uow.store.transactions.values()][0];
+    expect(stored?.referenceTransactionId).toBe(reference);
+  });
+
   it('rejects with the balance snapshot and the details', async () => {
     await apply(operation(), {
       kind: 'reject',
