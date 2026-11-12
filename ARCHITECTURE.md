@@ -164,7 +164,7 @@ A round may have several `WIN`s, and a processed `REFUND` may itself be rolled b
     | `(providerId, externalTransactionId)` | the financial operation |
     | `(consumerName, envelope messageId)` | an SQS delivery (inbox) |
 
-*   **Decision table.** The use case reads by key, then by external ID, first without a lock and again under the wallet lock:
+*   **Decision table.** The use case reads by key, then by external ID, first without a lock and again under the wallet lock. The table is applied to the row found, so a row found by external ID that carries the incoming key follows the key rows: without the lock, another request can commit between the two reads.
 
     | Key | Stored hash vs incoming | External ID | Result |
     |---|---|---|---|
@@ -453,6 +453,7 @@ In chronological order. A revised decision is not deleted: it is marked **Supers
 | 31 | Persistence implementation (task 04), listed below this table. | Decided |
 | 32 | Wallets, reconciliation, and the operational base (task 05), listed below this table. | Decided |
 | 33 | Basic processing and persistent idempotency (task 06), listed below this table. | Decided |
+| 34 | HTTP concurrency verification (task 07), listed below this table. | Decided |
 
 Decision 29 settled these points:
 
@@ -500,3 +501,9 @@ Decision 33 settled these points:
 *   **Found under the lock.** When the re-read under the wallet lock finds the operation stored, the use case raises an internal signal so the unit of work rolls back (the SQS inbox row was already inserted), then answers the replay; an SQS replay records its inbox row in the short replay transaction.
 *   **Duplicate deliveries.** `SubmitResult` carries `duplicate` next to `replay`, so the SQS consumer (task 09) can count an inbox duplicate without reading the inbox again. A duplicate is not counted as an idempotent replay.
 *   **Hashed fields.** `payloadHash` picks the operation's fields explicitly, so the SQS `data`, which also carries `idempotencyKey`, hashes the same as the HTTP body.
+
+Decision 34 settled these points:
+
+*   **Identity race in the unlocked lookup.** The duplicate-bet scenario (50 copies over 3 processes) showed copies answered with `409 EXTERNAL_TRANSACTION_ID_CONFLICT`: the key read missed the winner, which committed before the external-ID read found it. The decision table now applies to the row found, judged by its key, so that copy is a replay. A unit test places the commit between the two reads.
+*   **Shedding in the hot-wallet test.** The test shrinks the HTTP bulkhead to 4 running and 4 queued per process, so a 200-request burst overflows it on every run. The burst is sent once without resending `503`s; the quiet wallets' requests resend `503` with the same key and must all be processed.
+*   **Shared cluster helper.** `test/support/cluster.ts` starts the processes of a concurrency spec, asserts distinct PIDs, and stops them after the spec.
