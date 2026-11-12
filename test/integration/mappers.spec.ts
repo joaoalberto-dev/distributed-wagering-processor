@@ -13,11 +13,12 @@ import { OutboxMessage } from '../../src/domain/messaging/outbox-message.js';
 import { Money } from '../../src/domain/money/money.js';
 import { WagerTransaction } from '../../src/domain/transaction/wager-transaction.js';
 import { Wallet } from '../../src/domain/wallet/wallet.js';
-import { newId } from '../support/database.js';
+import { newId, useDatabase } from '../support/database.js';
 import { startInProcess } from '../support/in-process.js';
 import { useInfrastructure } from '../support/infrastructure.js';
 
 const infrastructure = useInfrastructure('mappers');
+const database = useDatabase(infrastructure);
 
 const brl = (amount: string) => Money.from({ amount, currency: 'BRL' });
 const at = new Date('2026-11-12T10:00:00.123Z');
@@ -35,6 +36,16 @@ afterAll(async () => {
 
 function write(fn: (tx: TxContext) => Promise<unknown>): Promise<unknown> {
   return app.unitOfWork.run(fn, { retryContention: false });
+}
+
+/**
+ * Makes `id` the first due outbox row. The test database's outbox is shared
+ * and grows with every run until a publisher drains it, so a claim must not
+ * depend on how many other rows are waiting.
+ */
+async function dueFirst(id: string): Promise<void> {
+  await database.owner`UPDATE outbox SET next_attempt_at = '2000-01-01T00:00:00Z'
+                         WHERE id = ${id}`;
 }
 
 function read<T>(fn: (tx: TxContext) => Promise<T>): Promise<T> {
@@ -272,6 +283,7 @@ describe('mappers', () => {
     });
     const message = OutboxMessage.enqueue(event);
     await write((tx) => tx.outbox.enqueue([message]));
+    await dueFirst(message.id);
 
     const claimed = await read(async (tx) =>
       (await tx.outbox.claimDue(1000)).find((m) => m.id === message.id),
@@ -279,6 +291,7 @@ describe('mappers', () => {
     expect(claimed?.toState()).toEqual(message.toState());
 
     await write((tx) => tx.outbox.scheduleRetry(message.id, 0, 'throttled'));
+    await dueFirst(message.id);
     const retried = await read(async (tx) =>
       (await tx.outbox.claimDue(1000)).find((m) => m.id === message.id),
     );
