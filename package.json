@@ -10,6 +10,8 @@
     "build": "nest build",
     "start:dev": "bun --watch src/bootstrap/main.ts",
     "start:prod": "bun dist/bootstrap/main.js",
+    "migrate:up": "bun scripts/migrate.ts up",
+    "migrate:down": "bun scripts/migrate.ts down",
     "typecheck": "tsc --noEmit",
     "lint": "oxlint --deny-warnings src/ test/",
     "format": "oxfmt \"src/**/*.ts\" \"test/**/*.ts\"",

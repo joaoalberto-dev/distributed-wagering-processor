@@ -28,6 +28,11 @@
     "noEmitOnError": true,
     "types": ["bun", "node"]
   },
-  "include": ["src/**/*.ts", "test/**/*.ts"],
+  "include": [
+    "src/**/*.ts",
+    "test/**/*.ts",
+    "migrations/**/*.ts",
+    "scripts/**/*.ts"
+  ],
   "exclude": ["node_modules", "dist"]
 }
