@@ -4,6 +4,7 @@ import { Migration0002WagerTransactions } from './0002-wager-transactions.js';
 import { Migration0003WalletLedgerEntries } from './0003-wallet-ledger-entries.js';
 import { Migration0004InboxOutbox } from './0004-inbox-outbox.js';
 import { Migration0005CommitConsistency } from './0005-commit-consistency.js';
+import { Migration0006WorkerIndexes } from './0006-worker-indexes.js';
 
 /**
  * Every migration, in the order it runs. Each entry names its class
@@ -24,7 +25,8 @@ export const migrations: MigrationObject[] = [
     name: 'Migration0005CommitConsistency',
     class: Migration0005CommitConsistency,
   },
+  { name: 'Migration0006WorkerIndexes', class: Migration0006WorkerIndexes },
 ];
 
 /** The name of the last migration; readiness compares the database against it. */
-export const LATEST_MIGRATION: string = 'Migration0005CommitConsistency';
+export const LATEST_MIGRATION: string = 'Migration0006WorkerIndexes';
