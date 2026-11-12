@@ -9,6 +9,12 @@ export type SpawnAppOptions = {
   /** The entry point; the built app by default. */
   readonly entry?: string;
   readonly startTimeoutMs?: number;
+  /**
+   * Whether to wait for `/health/ready` (the default). A process meant to
+   * crash while it starts, such as one with `crash-after-send` and events
+   * already due, is returned at once.
+   */
+  readonly waitUntilReady?: boolean;
 };
 
 export type SpawnedApp = {
@@ -47,7 +53,7 @@ async function collect(
     sink.push(decoder.decode(chunk, { stream: true }));
 }
 
-/** Starts the app as a separate process and waits until `/health/ready` answers 200. */
+/** Starts the app as a separate process and, by default, waits until `/health/ready` answers 200. */
 export async function spawnApp(options: SpawnAppOptions): Promise<SpawnedApp> {
   const port = freePort();
   const chunks: string[] = [];
@@ -86,6 +92,7 @@ export async function spawnApp(options: SpawnAppOptions): Promise<SpawnedApp> {
     },
   };
 
+  if (options.waitUntilReady === false) return app;
   try {
     await waitFor(
       async () => {
