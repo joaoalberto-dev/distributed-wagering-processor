@@ -44,6 +44,11 @@ const brl = (amount: string) => Money.from({ amount, currency: 'BRL' });
 class ScriptedUnitOfWork implements UnitOfWork {
   readonly locks: string[] = [];
   readonly hooks = new Map<number, (store: InMemoryStore) => void>();
+  /**
+   * Answered once by the next external-ID read, as if it committed between
+   * the key read and that read.
+   */
+  committedBetweenReads: WagerTransaction | undefined;
   runs = 0;
 
   constructor(readonly inner: InMemoryUnitOfWork) {}
@@ -60,8 +65,28 @@ class ScriptedUnitOfWork implements UnitOfWork {
 
   private spy(tx: TxContext): TxContext {
     const wallets = tx.wallets;
+    const transactions = tx.transactions;
     return {
       ...tx,
+      transactions: new Proxy(transactions, {
+        get: (target, property, receiver) => {
+          const value: unknown = Reflect.get(target, property, receiver);
+          if (property === 'findByExternalId') {
+            return (providerId: string, externalId: string) => {
+              const racing = this.committedBetweenReads;
+              this.committedBetweenReads = undefined;
+              return racing === undefined
+                ? transactions.findByExternalId(providerId, externalId)
+                : Promise.resolve(racing);
+            };
+          }
+          return typeof value === 'function'
+            ? ((value as (...args: unknown[]) => unknown).bind(
+                target,
+              ) as unknown)
+            : value;
+        },
+      }),
       wallets: {
         lock: (id, mode) => {
           this.locks.push(id);
@@ -459,6 +484,37 @@ describe('SubmitWagerTransaction', () => {
       });
       expect(await rejectionOf(submit.execute(command(op)))).toBeInstanceOf(
         IdempotencyKeyConflict,
+      );
+    });
+
+    it('replays the same operation committed between the key read and the external-ID read', async () => {
+      const op = operation();
+      const key = `${op.providerId}:${op.externalTransactionId}`;
+      const scratch = new InMemoryUnitOfWork(inner.clock);
+      storeCommitted(scratch.store, op, 'winner', key);
+      const winner = scratch.store.transactions.get('winner');
+      if (winner === undefined) throw new Error('fixture not stored');
+      uow.committedBetweenReads = WagerTransaction.rehydrate(winner);
+
+      const result = await submit.execute(command(op));
+      expect(result).toMatchObject({
+        replay: true,
+        transaction: { id: 'winner' },
+      });
+      expect(telemetry.of('idempotencyConflict')).toEqual([]);
+      expect(uow.locks).toEqual([]);
+    });
+
+    it('still refuses another key whose external ID committed between the reads', async () => {
+      const op = operation();
+      const scratch = new InMemoryUnitOfWork(inner.clock);
+      storeCommitted(scratch.store, op, 'winner', 'another-key');
+      const winner = scratch.store.transactions.get('winner');
+      if (winner === undefined) throw new Error('fixture not stored');
+      uow.committedBetweenReads = WagerTransaction.rehydrate(winner);
+
+      expect(await rejectionOf(submit.execute(command(op)))).toBeInstanceOf(
+        ExternalTransactionIdConflict,
       );
     });
 

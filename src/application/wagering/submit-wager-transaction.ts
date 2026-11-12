@@ -272,6 +272,11 @@ export class SubmitWagerTransaction {
   /**
    * The §8 decision table: the stored operation for a replay, null to
    * proceed, or a conflict.
+   *
+   * The two reads are separate statements, and without the wallet lock
+   * another submission can commit between them. A row found by external ID
+   * that carries this key is the row the key read missed, so the key rule
+   * decides it, not the external-ID rule.
    */
   private async identify(
     tx: TxContext,
@@ -279,24 +284,20 @@ export class SubmitWagerTransaction {
     hash: string,
   ): Promise<WagerTransaction | null> {
     const { providerId, externalTransactionId } = command.operation;
-    const byKey = await tx.transactions.findByKey(
-      providerId,
-      command.idempotencyKey,
-    );
-    if (byKey !== null) {
-      if (byKey.matchesPayload(hash)) return byKey;
-      this.telemetry.idempotencyConflict('IDEMPOTENCY_KEY_CONFLICT');
-      throw new IdempotencyKeyConflict();
-    }
-    const byExternalId = await tx.transactions.findByExternalId(
-      providerId,
-      externalTransactionId,
-    );
-    if (byExternalId !== null) {
+    const stored =
+      (await tx.transactions.findByKey(providerId, command.idempotencyKey)) ??
+      (await tx.transactions.findByExternalId(
+        providerId,
+        externalTransactionId,
+      ));
+    if (stored === null) return null;
+    if (stored.idempotencyKey !== command.idempotencyKey) {
       this.telemetry.idempotencyConflict('EXTERNAL_TRANSACTION_ID_CONFLICT');
       throw new ExternalTransactionIdConflict();
     }
-    return null;
+    if (stored.matchesPayload(hash)) return stored;
+    this.telemetry.idempotencyConflict('IDEMPOTENCY_KEY_CONFLICT');
+    throw new IdempotencyKeyConflict();
   }
 
   /** A stored inbox row: the same operation is a duplicate delivery, another one a conflict. */
