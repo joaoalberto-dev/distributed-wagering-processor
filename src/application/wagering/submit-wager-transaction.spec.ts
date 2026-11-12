@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it } from 'bun:test';
+import { FakeRequestContext } from '../../../test/support/fakes/fake-request-context.js';
 import type { InMemoryStore } from '../../../test/support/fakes/in-memory-repositories.js';
 import { InMemoryUnitOfWork } from '../../../test/support/fakes/in-memory-unit-of-work.js';
 import { RecordingLogger } from '../../../test/support/fakes/recording-logger.js';
@@ -15,11 +16,6 @@ import {
   WalletNotFound,
 } from '../errors.js';
 import { payloadHash } from '../idempotency/payload-hash.js';
-import type {
-  LogFieldUpdate,
-  LogFields,
-  RequestContext,
-} from '../ports/request-context.js';
 import type {
   TxContext,
   UnitOfWork,
@@ -99,19 +95,6 @@ class ScriptedUnitOfWork implements UnitOfWork {
         save: (w) => wallets.save(w),
       },
     };
-  }
-}
-
-class FakeRequestContext implements RequestContext {
-  fields: LogFields = {};
-  run<T>(_fields: LogFieldUpdate, fn: () => Promise<T>): Promise<T> {
-    return fn();
-  }
-  get(): LogFields {
-    return this.fields;
-  }
-  set(fields: LogFieldUpdate): void {
-    this.fields = { ...this.fields, ...(fields as LogFields) };
   }
 }
 
