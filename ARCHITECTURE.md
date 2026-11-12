@@ -342,6 +342,23 @@ The envelope is an abstract `IntegrationEvent<T>` with one subclass per event, c
 *   **Request context.** Every request gets a new `X-Request-Id`. An incoming `X-Correlation-Id` of 1–128 characters from `[A-Za-z0-9._:-]` is kept, and any other value is replaced by a new UUIDv7. Both are returned as response headers and carried into every log line of the request.
 *   **Readiness and routing.** Readiness covers SQS, as challenge §9 requires. In the shipped topology nothing routes on readiness, so HTTP keeps serving during an SQS outage. A production setup behind a load balancer would split HTTP readiness from consumer readiness.
 
+### Diagnosing operations, pending work, and failures
+
+Each instance serves `/metrics` and `/health/*`; gauges of shared state come from instances that run the publisher or the worker, so take their `max`. Logs are JSON lines; filter them by the IDs below.
+
+| Question or symptom | Where to look | What it means, and what to do |
+|---|---|---|
+| What happened to one operation? | `GET /providers/:providerId/wagering/transactions/:externalTransactionId` or `GET /wagering/transactions/:id`; logs by `correlationId`, `requestId`, `transactionId`, `messageId`, or `sqsMessageId` | The stored status and failure code are the answer; a `503` was never decided and is safe to resend with the same key. |
+| Is a wallet consistent? | `POST /wallets/:walletId/reconciliation`; `reconciliation_divergences_total{issue}` | Any issue means a write bypassed the rules. Reconciliation reports and never corrects; investigate the ledger with `GET /wallets/:walletId/ledger`. |
+| Is an instance ready? | `GET /health/ready` | A 503 body names the failing check: `postgres`, `sqs`, `migrations` (run the migrations), or `shutdown` (the instance is draining). |
+| Is a dependency down? | `circuit_state{dependency}` (2 open, 1 half-open); `statement_timeouts_total` | While a circuit is open, the loops that need it pause and spend no retry budget; HTTP keeps serving if PostgreSQL is up. |
+| Are events late? | `outbox_lag_seconds`, `outbox_pending`, `outbox_publish_attempts_total{result}`, `outbox_sender_faults_total` | A rising lag with `retry` results is an SQS problem; a sender fault is a malformed event, logged with its IDs and retried every 5 minutes. `outbox.last_error` holds the broker's reason. |
+| Are reversals waiting for their references? | `pending_references`, `reference_attempts_total{outcome}`, `reference_failed_total` | Rows wait up to the TTL (24 h); growth without `processed` outcomes means references are not arriving. |
+| Are SQS messages failing? | `sqs_retries_total{error_class}`, `sqs_dlq_moves_total{reason}`, `sqs_dlq_depth`; DLQ attributes `failureReason`, `errorClass`, `receiveCount`, `instanceId` | Redrive `RETRY_BUDGET_EXHAUSTED`, and `UNEXPECTED_ERROR` once fixed (§5); never permanent reasons. |
+| Is a wallet hot, or the database saturated? | `wallet_lock_wait_seconds{channel}`, `wallet_lock_timeouts_total`, `bulkhead_rejections_total{group}`, `db_pool_in_use`, `db_pool_waiting` | Lock timeouts on one wallet are expected under a burst and answer `503`; pool waits and bulkhead rejections across wallets mean the instance needs more capacity. |
+| Are retries replaying correctly? | `idempotent_replays_total`, `inbox_duplicates_total`, `idempotency_conflicts_total`, `message_id_conflicts_total` | Conflicts mean a provider reused a key or a `messageId` for another operation. |
+| Is it slow? | `wager_processing_duration_seconds{channel}` | Compare with lock waits: most latency under contention is the wallet lock. |
+
 ## 9. HTTP contract and failure codes
 
 | Route | Result responses | Error responses |
