@@ -188,6 +188,8 @@ A round may have several `WIN`s, and a processed `REFUND` may itself be rolled b
 ### SQS consumption
 
 *   **Same use case as HTTP.** The message is `{messageId, type: "WagerTransactionRequested", occurredAt, data}`, where `data` is the HTTP body plus `idempotencyKey` (challenge §10).
+    *   The adapter (`SqsWagerConsumer`) validates the envelope with the shared Zod schemas; an invalid one goes to the DLQ as `VALIDATION_FAILED` without reaching the application.
+    *   `ProcessWagerMessage` calls `SubmitWagerTransaction` with the delivery `(wager-transactions-consumer, messageId)` and maps the result or error to an outcome: ack, DLQ with a permanent reason, or retry with an error class. The adapter decides a retry from `ApproximateReceiveCount`.
 *   **Inbox first.**
     *   The consumer looks up `(consumerName, messageId)`: the same `(payload_hash, idempotency_key)` pair is acknowledged as a duplicate, and a different pair goes to the DLQ as `MESSAGE_ID_CONFLICT`.
     *   For a new message, the transaction ID is generated first. The inbox row is inserted with it before the wallet lock, and its foreign key is checked at commit.
@@ -207,8 +209,12 @@ A round may have several `WIN`s, and a processed `REFUND` may itself be rolled b
     | Business | domain rejection, identity conflict | 422 / 409 | ack, or DLQ for permanent errors |
     | Unexpected | anything else | 500 | backoff; DLQ on the 3rd receive |
 
+    *   The backoff is the message's new visibility timeout, rounded up to whole seconds, without jitter: the group is blocked while it waits, so jitter would spread no load.
+    *   An SQS call with no HTTP answer, a 5xx, or throttling is an `sqs` outage; any other 4xx leaves unchanged and counts as unexpected. The consumer receives nothing while the `postgres` or the `sqs` circuit is open.
+
 *   **One DLQ path.**
-    *   The application moves a message itself: it sends to the DLQ with the original group, a deduplication ID, and the attributes `failureReason`, `receiveCount`, `instanceId`, and `errorClass`, then deletes the original.
+    *   The application moves a message itself: it sends the body unchanged to the DLQ with the original group, a deduplication ID (the envelope `messageId`, or the SQS `MessageId` for an invalid envelope), and the attributes `failureReason`, `receiveCount`, `instanceId`, and `errorClass` (`contention`, `outage`, `unexpected`, or `permanent`), then deletes the original.
+    *   A failed delete, visibility change, or DLQ move is logged and left to the visibility timeout: the message comes back as an inbox duplicate, or is moved again and dropped by the DLQ's deduplication window.
     *   Native redrive at 50 receives is only a backstop for processes that die before classifying.
 *   **Redrive procedure.** Messages whose `failureReason` is `RETRY_BUDGET_EXHAUSTED`, or `UNEXPECTED_ERROR` after its cause is fixed, can be moved back to the input queue unchanged; the inbox and the identities make that safe. Permanent reasons (`VALIDATION_FAILED`, identity conflicts, `MESSAGE_ID_CONFLICT`, `WALLET_NOT_FOUND`) are not redriven.
 
@@ -456,6 +462,7 @@ In chronological order. A revised decision is not deleted: it is marked **Supers
 | 33 | Basic processing and persistent idempotency (task 06), listed below this table. | Decided |
 | 34 | HTTP concurrency verification (task 07), listed below this table. | Decided |
 | 35 | Reversals and the pending-reference worker (task 08), listed below this table. | Decided |
+| 36 | SQS consumption with the inbox, retries, and the DLQ (task 09), listed below this table. | Decided |
 
 Decision 29 settled these points:
 
@@ -519,3 +526,20 @@ Decision 35 settled these points:
 *   **Polling loop.** A failed cycle is logged and followed by the idle wait, like an empty one. The loop is built in the container and started by `WorkersModule` when `REFERENCE_WORKER_ENABLED`; it stops in `beforeApplicationShutdown`, so the cycle in progress finishes before the pool closes.
 *   **Due-row count.** The first version aliased its subquery `window`, a reserved word in PostgreSQL, so every select failed. Nothing ran the worker's reads against the database until this task; an integration test now covers `selectDue` and `recheck`.
 *   **Exact arrival order in tests.** The reversals spec runs a process without the worker and runs worker cycles in process, so a `WIN` that arrives before its `BET` is decided only after the `REFUND`, as decision 30 requires for the flag. The two-worker spec polls the row and asserts that each change of `attempts` is one step, taken after the previous window opened.
+
+Decision 36 settled these points:
+
+*   **Where the inbox lives.** The inbox lookup, the short replay transaction, and the inbox insert that inserts nothing were already in `SubmitWagerTransaction` (decision 33). `ProcessWagerMessage` only builds the command and classifies the result, and counts `inbox_duplicates_total` and `message_id_conflicts_total`.
+*   **Envelope validation in the adapter.** The application layer imports no contracts, so the consumer validates the envelope and passes the operation and its key; an invalid envelope is a DLQ move, never an application call.
+*   **Backoff in whole seconds.** `ChangeMessageVisibility` takes seconds, so the backoff is rounded up and is at least 1 s. It has no jitter.
+*   **SQS circuit.** `policies.sqs` classifies an SQS error inside the circuit, so only an unreachable SQS, a 5xx, or throttling is recorded.
+*   **Queue URLs on first use.** They are looked up by name when first needed and kept; a failed lookup is not kept, so an instance that boots while SQS is down finds its queues once SQS is back.
+*   **Readiness.** The SQS check calls `GetQueueAttributes` outside the `sqs` circuit, so a readiness probe never closes it.
+*   **Fault points.** `crash-after-commit` sends `SIGKILL` to the process between commit and delete, so no shutdown hook runs. `unexpected-on-wallet` wraps the submitter and fails before any read, so its wallet need not exist.
+*   **Error logs.** The application logger gained `error`, used for an unexpected error while processing a message. The line carries the error name only, because a driver message can quote payload values.
+*   **Tests.**
+    *   A spec can set environment for its queues and processes, so the crash spec's queue has a 5 s visibility timeout.
+    *   The ordering spec sends each group in one `SendMessageBatch`, so the whole group is visible before the next receive. A DLQ move without a release is shown by each later message reaching the DLQ on its first receive.
+    *   The race where HTTP commits between the SQS lookup and the lock is placed by holding the wallet lock, queueing the HTTP request on it, then the SQS delivery, and releasing.
+    *   With two concurrent deliveries of one `messageId` and different payloads, either may win; the spec checks that the other one is the DLQ message.
+    *   `parallel-wallets` and `out-of-order` send half of their operations over SQS; in `out-of-order`, each bet goes over the other channel than its reversal. `hot-wallet` adds one SQS bet per quiet wallet.
