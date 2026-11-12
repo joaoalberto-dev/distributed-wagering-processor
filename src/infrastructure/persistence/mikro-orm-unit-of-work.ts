@@ -28,10 +28,16 @@ export const DEFAULT_TIMEOUTS: Omit<UnitOfWorkTimeouts, 'lockTimeoutMs'> = {
   snapshotTransactionTimeoutMs: 35_000,
 };
 
-/** Retries the whole unit of work on Contention; the identity until resilience arrives. */
-export type ContentionRetry = <T>(attempt: () => Promise<T>) => Promise<T>;
+/** Runs a call under a resilience policy: a retry, a circuit, or nothing. */
+export type CallGuard = <T>(call: () => Promise<T>) => Promise<T>;
+
+/** Retries the whole unit of work on Contention. */
+export type ContentionRetry = CallGuard;
 
 export const NO_RETRY: ContentionRetry = (attempt) => attempt();
+
+/** No policy around the call. */
+export const UNGUARDED: CallGuard = (call) => call();
 
 /** The repositories of one transaction, all on the same entity manager. */
 export class MikroOrmTxContext implements TxContext {
@@ -64,13 +70,16 @@ export class MikroOrmUnitOfWork implements UnitOfWork {
     private readonly orm: MikroORM,
     private readonly timeouts: UnitOfWorkTimeouts,
     private readonly retryContention: ContentionRetry = NO_RETRY,
+    /** The `postgres` circuit, around each attempt: an open circuit fails fast. */
+    private readonly circuit: CallGuard = UNGUARDED,
   ) {}
 
   run<T>(
     fn: (tx: TxContext) => Promise<T>,
     options: UnitOfWorkOptions,
   ): Promise<T> {
-    const attempt = () => this.runOnce(fn, options.mode ?? 'write');
+    const attempt = () =>
+      this.circuit(() => this.runOnce(fn, options.mode ?? 'write'));
     return options.retryContention ? this.retryContention(attempt) : attempt();
   }
 
