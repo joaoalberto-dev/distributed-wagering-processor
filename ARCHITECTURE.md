@@ -398,15 +398,15 @@ Unit specs are under `src/` next to their source; the others are `test/integrati
 
 ### Test evidence
 
-A full run of `bun run test:all` on 2026-11-12, from commit `2f58ab8` on an 8-core AMD Ryzen 7 5700X3D with 60 GiB of memory, Linux, Bun 1.4.4, and the compose PostgreSQL 17.11 and MiniStack 1.5.39:
+A full run of `bun run test:all` on 2026-11-12, from commit `7bac3fb` (task 14) on an 8-core AMD Ryzen 7 5700X3D with 60 GiB of memory, Linux, Bun 1.4.4, and the compose PostgreSQL 17.11 and MiniStack 1.5.39:
 
 | Layer | Specs | Tests | Result | Test time |
 |---|---|---|---|---|
-| Unit | 35 | 449 | all pass | 0.4 s |
-| Integration | 20 | 223 | all pass | 69 s |
+| Unit | 35 | 459 | all pass | 0.5 s |
+| Integration | 22 | 231 | all pass | 71 s |
 | Concurrency | 11 | 11 | all pass | 100 s |
 
-The whole command, with the two builds, took 2 min 56 s. Task 12 required `test:all` to pass three times in a row; it did on the same machine the same day, with the same test counts and integration and concurrency times between 67 s and 103 s. The first run for this record failed once, in `outbox-publisher`, on a race in the spec itself; decision 40 describes it and its fix.
+The whole command, with the two builds, took 2 min 58 s. Task 12 required `test:all` to pass three times in a row; it did on the same machine the same day, from commit `2f58ab8`, with integration and concurrency times between 67 s and 103 s. The first run for this record failed once, in `outbox-publisher`, on a race in the spec itself; decision 40 describes it and its fix.
 
 ## 8. Observability
 
