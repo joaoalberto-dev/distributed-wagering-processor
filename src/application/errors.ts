@@ -125,3 +125,12 @@ export class OutageError extends ApplicationError {
     super(`${dependency} outage: ${reason}`, options);
   }
 }
+
+/** A ledger cursor this API did not issue. Restart paging without one. */
+export class InvalidCursor extends ApplicationError {
+  readonly code = 'INVALID_CURSOR';
+
+  constructor() {
+    super('the cursor is not valid; restart paging without one');
+  }
+}
