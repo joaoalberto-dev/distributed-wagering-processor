@@ -259,6 +259,7 @@ export class ResolvePendingReferences {
       transaction.status === WagerTransactionStatus.Processed &&
       reversedBy !== undefined
     ) {
+      this.telemetry.settlementOnReversedReference();
       this.logger.warn('settled against a reversed reference', {
         transactionId: transaction.id,
         kind: transaction.kind,

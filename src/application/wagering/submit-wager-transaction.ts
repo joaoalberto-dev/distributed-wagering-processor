@@ -406,6 +406,7 @@ export class SubmitWagerTransaction {
   private warnIfReversed(transaction: WagerTransaction): void {
     const reversedBy = transaction.resultDetails?.referenceReversedBy;
     if (reversedBy === undefined) return;
+    this.telemetry.settlementOnReversedReference();
     this.logger.warn('settled against a reversed reference', {
       transactionId: transaction.id,
       kind: transaction.kind,

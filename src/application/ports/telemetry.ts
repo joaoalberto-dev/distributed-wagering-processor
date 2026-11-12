@@ -20,6 +20,8 @@ export interface Telemetry {
   ): void;
   referenceFailed(): void;
   reconciliationDivergence(issue: string): void;
+  /** A `WIN` or `LOSS` processed against a reversed `BET` (D9). */
+  settlementOnReversedReference(): void;
   outboxPublishAttempt(result: 'ok' | 'retry' | 'sender-fault'): void;
 }
 

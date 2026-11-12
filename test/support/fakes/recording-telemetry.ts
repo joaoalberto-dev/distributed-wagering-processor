@@ -50,6 +50,9 @@ export class RecordingTelemetry implements Telemetry {
   ) {
     this.#record('reconciliationDivergence', args);
   }
+  settlementOnReversedReference() {
+    this.#record('settlementOnReversedReference', []);
+  }
   outboxPublishAttempt(...args: Parameters<Telemetry['outboxPublishAttempt']>) {
     this.#record('outboxPublishAttempt', args);
   }

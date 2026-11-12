@@ -188,27 +188,40 @@ describe('ROLLBACK', () => {
   });
 });
 
+/** `settlement_on_reversed_reference_total` on the spawned app. */
+async function reversedSettlements(): Promise<number> {
+  const metrics = await http.get<string>('/metrics');
+  const line = metrics.body
+    .split('\n')
+    .find((l) => l.startsWith('settlement_on_reversed_reference_total '));
+  return line === undefined ? 0 : Number(line.split(' ').at(-1));
+}
+
 describe('a WIN against a reversed BET', () => {
-  it('is processed and flagged when the reversal arrives first', async () => {
+  it('is processed, flagged, and counted once when the reversal arrives first', async () => {
     const wallet = await open();
     const bet = wagerBody(wallet);
     await send(bet, 200);
     const refund = await send(reversal(wallet, 'REFUND', bet), 200);
+    const before = await reversedSettlements();
 
-    const win = await send(
-      wagerBody(wallet, {
-        kind: 'WIN',
-        money: brl('30.00'),
-        referenceExternalTransactionId: bet.externalTransactionId,
-      }),
-      200,
-    );
+    const winBody = wagerBody(wallet, {
+      kind: 'WIN',
+      money: brl('30.00'),
+      referenceExternalTransactionId: bet.externalTransactionId,
+    });
+    const win = await send(winBody, 200);
 
     expect(win).toMatchObject({
       status: 'PROCESSED',
       balance: brl('130.00'),
       details: { referenceReversedBy: refund.transactionId },
     });
+    expect(await reversedSettlements()).toBe(before + 1);
+
+    // A replay is not a new settlement.
+    await send(winBody, 200);
+    expect(await reversedSettlements()).toBe(before + 1);
   });
 
   it('is processed and flagged when the WIN arrives first and waits for its BET', async () => {

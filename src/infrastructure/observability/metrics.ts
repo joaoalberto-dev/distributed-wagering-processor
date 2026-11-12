@@ -95,6 +95,10 @@ export class Metrics implements Telemetry, PolicyListener, PersistenceObserver {
     'Reconciliation issues found, by issue',
     ['issue'],
   );
+  readonly #reversedSettlements = this.#counter(
+    'settlement_on_reversed_reference_total',
+    'WIN or LOSS operations processed against a reversed BET',
+  );
   readonly #publishAttempts = this.#counter(
     'outbox_publish_attempts_total',
     'Outbox send attempts by result',
@@ -173,6 +177,9 @@ export class Metrics implements Telemetry, PolicyListener, PersistenceObserver {
   }
   reconciliationDivergence(issue: string): void {
     this.#divergences.inc({ issue });
+  }
+  settlementOnReversedReference(): void {
+    this.#reversedSettlements.inc();
   }
   outboxPublishAttempt(result: 'ok' | 'retry' | 'sender-fault'): void {
     this.#publishAttempts.inc({ result });

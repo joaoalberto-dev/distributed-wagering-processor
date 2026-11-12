@@ -438,6 +438,7 @@ describe('SubmitWagerTransaction', () => {
       expect(logger.warnings.map((w) => w.message)).toEqual([
         'settled against a reversed reference',
       ]);
+      expect(telemetry.of('settlementOnReversedReference')).toEqual([[]]);
     });
   });
 
