@@ -133,7 +133,7 @@ export class MikroOrmTransactionRepository implements TransactionRepository {
     const [counted] = await query<{ due: number }>(
       this.em,
       `SELECT count(*)::int AS due
-         FROM (SELECT 1 FROM wager_transactions WHERE ${DUE} LIMIT ?) AS window`,
+         FROM (SELECT 1 FROM wager_transactions WHERE ${DUE} LIMIT ?) AS due_window`,
       [maxOffset],
     );
     const due = counted?.due ?? 0;

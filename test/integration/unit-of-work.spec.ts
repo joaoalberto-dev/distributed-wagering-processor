@@ -270,3 +270,52 @@ describe('contention', () => {
     }
   });
 });
+
+describe('the worker reads', () => {
+  it('selects due rows only and re-checks them with the database clock', async () => {
+    const holder = walletRow();
+    const due = pendingRow(holder, {
+      next_reference_attempt_at: new Date(Date.now() - 60_000),
+    });
+    const later = pendingRow(holder, {
+      next_reference_attempt_at: new Date(Date.now() + 60_000),
+    });
+    const expired = pendingRow(holder, {
+      next_reference_attempt_at: new Date(Date.now() - 60_000),
+      reference_expires_at: new Date(Date.now() - 1000),
+    });
+    await database.owner.begin(async (tx) => {
+      await insertRow(tx, 'wallets', holder);
+      for (const row of [due, later, expired]) {
+        await insertRow(tx, 'wager_transactions', row);
+      }
+    });
+
+    const { selected, checks } = await app.unitOfWork.run(
+      async (tx) => ({
+        // Every due row in the shared test database fits within the window.
+        selected: await tx.transactions.selectDue(10_000, 1),
+        checks: await Promise.all(
+          [due, later, expired].map((row) =>
+            tx.transactions.recheck(row.id as string),
+          ),
+        ),
+      }),
+      { retryContention: false },
+    );
+
+    expect(selected).toContain(due.id as string);
+    expect(selected).toContain(expired.id as string);
+    expect(selected).not.toContain(later.id as string);
+    expect(checks).toEqual([
+      { due: true, ttlReached: false },
+      { due: false, ttlReached: false },
+      { due: true, ttlReached: true },
+    ]);
+    expect(
+      await app.unitOfWork.run((tx) => tx.transactions.recheck(newId()), {
+        retryContention: false,
+      }),
+    ).toBeNull();
+  });
+});
