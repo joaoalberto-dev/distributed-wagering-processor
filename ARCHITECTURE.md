@@ -341,7 +341,8 @@ The envelope is an abstract `IntegrationEvent<T>` with one subclass per event, c
 | `POST /wallets/:walletId/reconciliation` | 200, even when inconsistent | 404 |
 | `GET /health/live`, `GET /health/ready`, `GET /metrics` | 200 | ready: 503 |
 
-*   **Transaction result body:** `{ transactionId, status, balance, failureCode?, details?, idempotentReplay }`. `balance` is the snapshot when the result was decided, and is `null` for `PENDING_REFERENCE` and `FAILED`.
+*   **Transaction result body:** `{ transactionId, status, balance, failureCode?, details?, idempotentReplay }`. `balance` is the wallet's balance when the result was decided, in the wallet's currency, and is `null` for `PENDING_REFERENCE` and `FAILED`. Only a `CURRENCY_MISMATCH` rejection has a `balance` in another currency than its `money`.
+*   **`Idempotency-Key`** is validated like the body: a missing or malformed key is `400 VALIDATION_FAILED` with the issue path `idempotency-key`.
 *   **`422` always means a persisted, final transaction result.**
 *   **Every other error** uses `{ "error": { "code", "message", "details?" } }`.
 *   **Every `503` carries `Retry-After`.**
@@ -451,6 +452,7 @@ In chronological order. A revised decision is not deleted: it is marked **Supers
 | 30 | Domain implementation (task 03): `referenceReversedBy` flags only a `WIN` or `LOSS` decided after its `BET` was reversed, because terminal results are never rewritten; `REFERENCE_ALREADY_REVERSED` also carries `details.referenceReversedBy`. This refines the "both arrival orders" wording of the task 03 and task 08 test lists in the design document. | Decided |
 | 31 | Persistence implementation (task 04), listed below this table. | Decided |
 | 32 | Wallets, reconciliation, and the operational base (task 05), listed below this table. | Decided |
+| 33 | Basic processing and persistent idempotency (task 06), listed below this table. | Decided |
 
 Decision 29 settled these points:
 
@@ -489,3 +491,12 @@ Decision 32 settled these points:
 *   **Error contract details.** A malformed path parameter or body is `400 VALIDATION_FAILED`, with each issue named by its field or parameter. Malformed JSON is also `400 VALIDATION_FAILED`. An unknown route is `404 NOT_FOUND` in the error envelope. Readiness keeps the health-check body, which names each check.
 *   **Ledger pages.** A page reads one entry beyond `limit`; `nextCursor` is set only when that entry exists, so the last page always has `nextCursor: null`, even when it is full. An unknown wallet is `404` before any cursor is used.
 *   **Test fakes.** The recording publisher arrives with the `EventPublisher` port in task 10; task 05 adds the other fakes and a recording logger.
+
+Decision 33 settled these points:
+
+*   **Snapshot currency.** The result snapshot is the wallet's balance. The first schema required its currency to equal the operation's for every decided row, which made a `CURRENCY_MISMATCH` rejection impossible to store. Migration `0007` keeps that equality for `PROCESSED`, where D3 has passed, and requires only a present currency for `REJECTED`.
+*   **Header validation.** Nest's `@Headers` takes neither a schema nor pipes. A small `@RequestHeader(name, { schema })` decorator reads one header, and the global validation pipe validates custom decorators that declare a schema, so the key fails exactly like a body field.
+*   **Reference on the result.** `applyOutcome` records the resolved reference's ID on a processed result. The commit-time direction check of a `ROLLBACK` and the one-successful-reversal index both read it.
+*   **Found under the lock.** When the re-read under the wallet lock finds the operation stored, the use case raises an internal signal so the unit of work rolls back (the SQS inbox row was already inserted), then answers the replay; an SQS replay records its inbox row in the short replay transaction.
+*   **Duplicate deliveries.** `SubmitResult` carries `duplicate` next to `replay`, so the SQS consumer (task 09) can count an inbox duplicate without reading the inbox again. A duplicate is not counted as an idempotent replay.
+*   **Hashed fields.** `payloadHash` picks the operation's fields explicitly, so the SQS `data`, which also carries `idempotencyKey`, hashes the same as the HTTP body.
