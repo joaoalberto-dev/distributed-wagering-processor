@@ -489,6 +489,7 @@ In chronological order. A revised decision is not deleted: it is marked **Supers
 | 36 | SQS consumption with the inbox, retries, and the DLQ (task 09), listed below this table. | Decided |
 | 37 | Concurrent outbox publishing (task 10), listed below this table. | Decided |
 | 38 | Observability and health checks (task 11), listed below this table. | Decided |
+| 39 | Recovery across multiple instances (task 12), listed below this table. | Decided |
 
 Decision 29 settled these points:
 
@@ -595,3 +596,11 @@ Decision 38 settled these points:
     *   The log check parses every JSON line of the process and fails on a key named `amount`, `balance`, `money`, or `payload`, on any string value shaped like an amount, and on the spec's own amounts anywhere in the output.
     *   `shutdown` holds the four wallets' row locks so each group's first message is in progress when `SIGTERM` arrives, with a lock timeout longer than the hold. It checks that exactly those four commit before the exit and that the other 16 are visible again at once, well before their 30 s visibility timeout.
     *   `sqs-outage` sends its waiting messages to the input queue directly, not through the proxy, and shows that no receive budget was spent by finding them all still visible, with none in flight, at the end of the 60 s outage.
+
+Decision 39 settled these points:
+
+*   **Restart without a crash hook.** `restart-recovery` uses no fault point. The three processes get `SIGKILL` once 200 of the 500 operations were answered, with up to 40 requests in flight, so the kill can land in a commit, a receive, a publisher send, or a worker cycle. Recovery relies only on what a restart already gives: PostgreSQL rolls back the open transactions, messages in flight come back after their visibility timeout (5 s in this spec), and unpublished outbox rows and due pending references are picked up by the new processes.
+*   **The provider's side of a crash.** An HTTP request that lost its connection, or got a 503, has an unknown outcome, so the spec resends it to the new processes with the same key, as a provider would. Some of those were committed before the kill and answer as replays. The spec asserts that at least one request was interrupted, so it never passes against an idle cluster.
+*   **Mixed traffic.** Each group of five operations on a wallet has a bet that is won, a bet that is refunded, and either a rollback of the win or a loss. Two groups in three send the dependents first, so pending references exist when the kill happens and must be resolved by the wake-up and the workers of the new processes. Every operation is valid with enough funds in any order, so each wallet ends at an exact balance and version (`985.00`, version 46) that a duplicated or lost effect would change.
+*   **The 60 s window** starts when the new processes are ready and covers the resends and the rest of the traffic. Within it the spec waits for no `PENDING_REFERENCE` row, no unpublished outbox row, and no visible or in-flight input message for its wallets; then it checks the DLQ is empty, all 500 operations are `PROCESSED`, and every wallet reconciles.
+*   **Reconciliation during writes.** `reconcile-during-writes` sends reconciliation `k` once `10 + 12k` of 300 writes were answered, so all 20 are sent while writes are in flight, and checks that most of them also answered before the writes ended. Each must answer `consistent: true` with no issues.
