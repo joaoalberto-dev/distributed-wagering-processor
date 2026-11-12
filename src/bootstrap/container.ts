@@ -6,6 +6,8 @@ import type { ProviderIdentityPort } from '../application/ports/provider-identit
 import type { QueryPort } from '../application/ports/queries.js';
 import type { RequestContext } from '../application/ports/request-context.js';
 import type { UnitOfWork } from '../application/ports/unit-of-work.js';
+import { SubmitWagerTransaction } from '../application/wagering/submit-wager-transaction.js';
+import { WagerQueries } from '../application/wagering/wager-queries.js';
 import { OpenWallet } from '../application/wallets/open-wallet.js';
 import { ReconcileWallet } from '../application/wallets/reconcile-wallet.js';
 import { TrustAllProviderIdentity } from '../infrastructure/auth/trust-all-provider-identity.js';
@@ -57,6 +59,8 @@ export type Application = {
   readonly providerIdentity: ProviderIdentityPort;
   readonly openWallet: OpenWallet;
   readonly reconcileWallet: ReconcileWallet;
+  readonly submitWagerTransaction: SubmitWagerTransaction;
+  readonly wagerQueries: WagerQueries;
   close(): Promise<void>;
 };
 
@@ -92,6 +96,9 @@ export async function buildApplication(
   const queries = new SqlQueryPort(orm, policies.postgres);
   const clock = overrides.clock ?? new SystemClock();
   const ids = overrides.ids ?? new UuidV7Generator();
+  const providerIdentity = new TrustAllProviderIdentity(
+    appLogger('Authentication'),
+  );
 
   return {
     config,
@@ -104,13 +111,24 @@ export async function buildApplication(
     logger,
     metrics,
     policies,
-    providerIdentity: new TrustAllProviderIdentity(appLogger('Authentication')),
+    providerIdentity,
     openWallet: new OpenWallet(unitOfWork, clock, ids),
     reconcileWallet: new ReconcileWallet(
       unitOfWork,
       metrics,
       appLogger('Reconciliation'),
     ),
+    submitWagerTransaction: new SubmitWagerTransaction(
+      unitOfWork,
+      clock,
+      ids,
+      metrics,
+      appLogger('Wagering'),
+      providerIdentity,
+      requestContext,
+      { referenceTtlMs: config.referenceTtlSeconds * 1000 },
+    ),
+    wagerQueries: new WagerQueries(queries),
     close: async () => {
       stopListening();
       await orm.close(true);
