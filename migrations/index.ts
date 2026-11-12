@@ -29,4 +29,4 @@ export const migrations: MigrationObject[] = [
 ];
 
 /** The name of the last migration; readiness compares the database against it. */
-export const LATEST_MIGRATION: string = 'Migration0006WorkerIndexes';
+export { LATEST_MIGRATION } from '../src/infrastructure/persistence/schema-version.js';
