@@ -47,7 +47,7 @@ async function collect(
     sink.push(decoder.decode(chunk, { stream: true }));
 }
 
-/** Starts the app as a separate process and waits until `/health/live` answers. */
+/** Starts the app as a separate process and waits until `/health/ready` answers 200. */
 export async function spawnApp(options: SpawnAppOptions): Promise<SpawnedApp> {
   const port = freePort();
   const chunks: string[] = [];
@@ -92,7 +92,7 @@ export async function spawnApp(options: SpawnAppOptions): Promise<SpawnedApp> {
         if (child.exitCode !== null) {
           throw new Error(`exited with code ${child.exitCode}`);
         }
-        const response = await fetch(`${baseUrl}/health/live`);
+        const response = await fetch(`${baseUrl}/health/ready`);
         return response.ok;
       },
       {
