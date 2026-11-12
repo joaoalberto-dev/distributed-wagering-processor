@@ -8,8 +8,12 @@ import { waitFor } from './wait-for.js';
 export type ClusterOptions = {
   /** Number of processes; the concurrency layer always runs three or more. */
   readonly size?: number;
-  /** Extra environment for every process, on top of the spec's. */
-  readonly env?: Record<string, string>;
+  /**
+   * Extra environment for every process, on top of the spec's. A function
+   * is called when the processes start, after the spec's other hooks, such
+   * as a proxy's, have run.
+   */
+  readonly env?: Record<string, string> | (() => Record<string, string>);
 };
 
 /** Several app processes on the same database and queues, one client each. */
@@ -53,7 +57,9 @@ export function useCluster(
   const clients: HttpClient[] = [];
 
   beforeAll(async () => {
-    const env = { ...infrastructure.env, ...options.env };
+    const extra =
+      typeof options.env === 'function' ? options.env() : options.env;
+    const env = { ...infrastructure.env, ...extra };
     const started = await Promise.allSettled(
       Array.from({ length: size }, () => spawnApp({ env })),
     );
