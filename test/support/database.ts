@@ -208,3 +208,50 @@ export async function commitViolationOf(
   }
   throw new Error('Expected the commit to fail, but it succeeded');
 }
+
+function addCents(amount: string, cents: bigint): string {
+  const minor = BigInt(amount.replace('.', '')) + cents;
+  const digits = minor.toString().padStart(3, '0');
+  return `${digits.slice(0, -2)}.${digits.slice(-2)}`;
+}
+
+/**
+ * Commits `count` processed `WIN` credits of 1.00 on a committed wallet, one
+ * SQL transaction each, so every commit-time check passes. For specs that
+ * need ledger entries before the wagering endpoint exists.
+ */
+export async function appendWins(
+  sql: SQL,
+  walletId: string,
+  count: number,
+): Promise<void> {
+  for (let i = 0; i < count; i += 1) {
+    await sql.begin(async (tx) => {
+      const [wallet] = (await tx`
+        SELECT id, player_id, currency, balance::text AS balance, version
+          FROM wallets WHERE id = ${walletId} FOR UPDATE`) as Row[];
+      if (wallet === undefined) throw new Error(`no wallet ${walletId}`);
+      const before = String(wallet.balance);
+      const after = addCents(before, 100n);
+      const version = Number(wallet.version) + 1;
+      const win = transactionRow(wallet, {
+        kind: 'WIN',
+        amount: '1.00',
+        result_balance_amount: after,
+      });
+      await insertRow(tx, 'wager_transactions', win);
+      await insertRow(
+        tx,
+        'wallet_ledger_entries',
+        entryRow(win, {
+          direction: 'CREDIT',
+          balance_before: before,
+          balance_after: after,
+          wallet_version: version,
+        }),
+      );
+      await tx`UPDATE wallets SET balance = ${after}, version = ${version},
+                 updated_at = now() WHERE id = ${walletId}`;
+    });
+  }
+}
