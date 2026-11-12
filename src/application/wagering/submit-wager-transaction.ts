@@ -130,7 +130,7 @@ export class SubmitWagerTransaction {
     try {
       decided = await this.unitOfWork.run(
         (tx) => this.decide(tx, command, hash, transactionId),
-        { retryContention },
+        { retryContention, channel },
       );
     } catch (error) {
       if (error instanceof AlreadyStored) {

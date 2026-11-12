@@ -97,7 +97,7 @@ export class ResolvePendingReferences {
         });
         attempt = await this.unitOfWork.run(
           (tx) => this.resolve(tx, due.transaction, due.ttlReached),
-          { retryContention: false },
+          { retryContention: false, channel: 'worker' },
         );
       }
     } catch (error) {
@@ -185,7 +185,7 @@ export class ResolvePendingReferences {
       }
       const failed = await this.unitOfWork.run(
         (tx) => this.fail(tx, due.transaction),
-        { retryContention: false },
+        { retryContention: false, channel: 'worker' },
       );
       if (failed !== SKIPPED) {
         this.logger.warn('pending reference failed at its TTL', {

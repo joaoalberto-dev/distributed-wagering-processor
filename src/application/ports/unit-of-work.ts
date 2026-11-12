@@ -6,6 +6,7 @@ import type {
   TransactionRepository,
   WalletRepository,
 } from './repositories.js';
+import type { Channel } from './telemetry.js';
 
 /** The repositories of one SQL transaction. They are valid only inside `UnitOfWork.run`. */
 export interface TxContext {
@@ -26,6 +27,8 @@ export type UnitOfWorkOptions = {
    * `REPEATABLE READ READ ONLY` transaction with the reconciliation timeouts.
    */
   readonly mode?: 'write' | 'read-only-snapshot';
+  /** The channel the work came through; labels the wallet-lock wait it measures. */
+  readonly channel?: Channel;
 };
 
 /**
