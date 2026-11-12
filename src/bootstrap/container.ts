@@ -42,6 +42,10 @@ import {
   JsonLogger,
   NestAppLogger,
 } from '../infrastructure/observability/json-logger.js';
+import {
+  DatabaseGauges,
+  gaugeSources,
+} from '../infrastructure/observability/database-gauges.js';
 import { Metrics } from '../infrastructure/observability/metrics.js';
 import { AsyncLocalRequestContext } from '../infrastructure/observability/request-context.js';
 import { createOrmConfig } from '../infrastructure/persistence/mikro-orm.config.js';
@@ -88,6 +92,8 @@ export type Application = {
   readonly requestContext: RequestContext;
   readonly logger: JsonLogger;
   readonly metrics: Metrics;
+  /** Refreshed by each `/metrics` scrape. */
+  readonly gauges: DatabaseGauges;
   readonly policies: Policies;
   readonly providerIdentity: ProviderIdentityPort;
   readonly openWallet: OpenWallet;
@@ -241,6 +247,12 @@ export async function buildApplication(
       }),
   });
 
+  const gauges = new DatabaseGauges({
+    sources: gaugeSources(orm, sqs, queues),
+    registry: metrics.registry,
+    readShared: config.roles.outboxPublisher || config.roles.referenceWorker,
+  });
+
   return {
     config,
     orm,
@@ -251,6 +263,7 @@ export async function buildApplication(
     requestContext,
     logger,
     metrics,
+    gauges,
     policies,
     providerIdentity,
     openWallet: new OpenWallet(unitOfWork, clock, ids),

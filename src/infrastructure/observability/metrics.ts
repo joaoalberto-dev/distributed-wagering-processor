@@ -26,8 +26,8 @@ const CIRCUIT_VALUE: Readonly<Record<CircuitState, number>> = {
 
 /**
  * One Prometheus registry per process. It implements the application's
- * `Telemetry` port and listens to the resilience policies; the gauges read
- * from the database and the queue are added with the workers (task 11).
+ * `Telemetry` port and listens to the resilience policies and the
+ * persistence adapters; `DatabaseGauges` adds its gauges to the registry.
  */
 export class Metrics implements Telemetry, PolicyListener, PersistenceObserver {
   readonly registry = new Registry();

@@ -5,6 +5,7 @@ import { ID_GENERATOR } from '../application/ports/id-generator.js';
 import { PROVIDER_IDENTITY } from '../application/ports/provider-identity.js';
 import { REQUEST_CONTEXT } from '../application/ports/request-context.js';
 import { TELEMETRY } from '../application/ports/telemetry.js';
+import { DatabaseGauges } from '../infrastructure/observability/database-gauges.js';
 import { HealthController } from '../infrastructure/observability/health.controller.js';
 import { ReadinessIndicators } from '../infrastructure/observability/indicators.js';
 import { MetricsController } from '../infrastructure/observability/metrics.controller.js';
@@ -25,6 +26,7 @@ export class ObservabilityModule {
       controllers: [HealthController, MetricsController],
       providers: [
         { provide: Metrics, useValue: app.metrics },
+        { provide: DatabaseGauges, useValue: app.gauges },
         { provide: TELEMETRY, useValue: app.metrics },
         { provide: REQUEST_CONTEXT, useValue: app.requestContext },
         { provide: ID_GENERATOR, useValue: app.ids },
