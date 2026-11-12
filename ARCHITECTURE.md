@@ -103,10 +103,10 @@ The first failing check decides the outcome. HTTP and SQS run the full list; the
     *   D1 wallet exists (else `404`, not persisted); D2 wallet belongs to the player; D3 same currency.
     *   D4 reference resolved by `(providerId, referenceExternalTransactionId)`; absent → wait as `PENDING_REFERENCE`.
     *   D5 same player, wallet, currency, and round (`details.field` names the first difference); D6 allowed reference kind (`WIN`/`LOSS`/`REFUND` → `BET`; `ROLLBACK` → `BET`, `WIN`, `REFUND`); D7 reversal amount equals the reference amount; D8 reference status (pending → wait; rejected or failed → `REFERENCE_NOT_PROCESSED`).
-    *   D9 at most one successful reversal per transaction, across `REFUND` and `ROLLBACK` (`REFERENCE_ALREADY_REVERSED`).
+    *   D9 at most one successful reversal per transaction, across `REFUND` and `ROLLBACK` (`REFERENCE_ALREADY_REVERSED`, with `details.referenceReversedBy` naming the reversal that already succeeded).
     *   D10 funds (`INSUFFICIENT_FUNDS`; `REVERSAL_INSUFFICIENT_FUNDS` for a `ROLLBACK` debit); D11 ceiling (`BALANCE_LIMIT_EXCEEDED`).
 
-A round may have several `WIN`s, and a processed `REFUND` may itself be rolled back. A `WIN` or `LOSS` against a reversed `BET` is processed and flagged with `details.referenceReversedBy`, whatever the arrival order (see §10).
+A round may have several `WIN`s, and a processed `REFUND` may itself be rolled back. A `WIN` or `LOSS` against a `BET` is processed whatever the arrival order of a reversal of that `BET` (see §10). It is flagged with `details.referenceReversedBy` when the reversal was already processed at the time it is decided; a `WIN` or `LOSS` decided first stays unflagged, and the later reversal is processed normally.
 
 ### Reconciliation
 
@@ -366,7 +366,7 @@ DLQ-only reasons: `UNEXPECTED_ERROR` (3rd receive) and `RETRY_BUDGET_EXHAUSTED` 
 | "A referência não pode ser revertida duas vezes pelo mesmo tipo" | One successful direct reversal per transaction, across `REFUND` and `ROLLBACK` | Allowing one of each would return a refunded stake twice. |
 | `WIN` "pode referenciar a BET" | The reference is optional; when present it must be valid | The wording is permissive. |
 | `LOSS` records the result without moving the balance | Any non-negative informational amount; an optional `BET` reference under the `WIN` rules | A provider that sends the stake is not rejected. |
-| `WIN` or `LOSS` against a reversed `BET` | Processed and flagged with `details.referenceReversedBy` in the response, the replay, and `WagerTransactionProcessed` | The challenge has no round state; rejecting would make the outcome depend on arrival order. |
+| `WIN` or `LOSS` against a reversed `BET` | Processed in either order. When the reversal was processed first, the `WIN` or `LOSS` is flagged with `details.referenceReversedBy` in the response, the replay, and `WagerTransactionProcessed`; when it came first, it stays unflagged and the reversal is processed normally | The challenge has no round state; rejecting would make the outcome depend on arrival order. A decided result is never rewritten, so the flag describes what was known at decision time. |
 | `FAILED` = "erro permanente de infraestrutura" | An unexpected error that persists until the reference TTL; used only for pending rows | Transient infrastructure errors never cause `FAILED`; a final result is final per external ID. |
 | A repeat returns "o resultado original" | Terminal results replay their snapshot; a pending operation replays its eventual terminal result | A pending answer is not final. |
 | Idempotency key as "fonte da verdade" | Scoped per provider and never part of the hash; the external ID is unique on its own | The challenge's default key format includes the provider; one operation must not move money twice. |
@@ -433,7 +433,7 @@ In chronological order. A revised decision is not deleted: it is marked **Supers
 | 19 | A terminal result is final for its external ID. | Decided |
 | 20 | `FAILED` only when the final attempt at the reference TTL throws; replayed as `422 PROCESSING_FAILED`. | Decided |
 | 21 | `LOSS` takes any non-negative informational amount and an optional `BET` reference. | Decided; supersedes the `LOSS` part of 1 |
-| 22 | A `WIN` or `LOSS` against a reversed `BET` is processed and flagged with `referenceReversedBy`. | Decided |
+| 22 | A `WIN` or `LOSS` against a reversed `BET` is processed and flagged with `referenceReversedBy`. | Decided; refined by 30 |
 | 23 | `404 WALLET_NOT_FOUND` on every endpoint; `422` reserved for a persisted transaction result. | Decided |
 | 24 | One application DLQ path with budgets of 3 (unexpected) and 10 (contention, outage) and a 60 s backoff cap; native redrive at 15 as a backstop. | Redrive threshold **Superseded** by 29 |
 | 25 | Simplifications: outbox without a lease (one transaction with `SKIP LOCKED`), one payload hash for idempotency and the inbox, one authentication port, Zod schemas shared by HTTP and SQS, one polling loop. | Decided |
@@ -441,6 +441,7 @@ In chronological order. A revised decision is not deleted: it is marked **Supers
 | 27 | `wagering_app` gets only `SELECT`, `INSERT`, and `UPDATE`; grants and triggers are independent barriers. | Decided |
 | 28 | The `nest start` script is removed; development runs the source on Bun, and production runs the `tsc` build on Bun. | Decided |
 | 29 | Design review outcome, listed below this table. | Decided |
+| 30 | Domain implementation (task 03): `referenceReversedBy` flags only a `WIN` or `LOSS` decided after its `BET` was reversed, because terminal results are never rewritten; `REFERENCE_ALREADY_REVERSED` also carries `details.referenceReversedBy`. This refines the "both arrival orders" wording of the task 03 and task 08 test lists in the design document. | Decided |
 
 Decision 29 settled these points:
 
