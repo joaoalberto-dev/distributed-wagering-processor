@@ -2,7 +2,7 @@
 
 This document describes the Distributed Wagering Processor: what it guarantees, how, and at what cost. The main body describes the current design, organized by the evaluation areas of the challenge. Appendix A keeps the decision log in chronological order, including decisions that were later replaced.
 
-*   **Status:** every mandatory requirement is implemented and tested (tasks 01–13 on the [project board](https://github.com/users/joaoalberto-dev/projects/3)); §7 maps each requirement to its tests and records a full run. The Stretch items of task 14 are listed in §11 as not built. Where code and this document disagree, the disagreement is a bug in one of them.
+*   **Status:** every mandatory requirement is implemented and tested (tasks 01–13 on the [project board](https://github.com/users/joaoalberto-dev/projects/3)); §7 maps each requirement to its tests and records a full run. The Stretch items of task 14 are built too: the CI job for the integration and concurrency layers, the three further reconciliation issues, `settlement_on_reversed_reference_total`, `bun run demo`, and `bun run dlq:redrive`; load testing is not. Where code and this document disagree, the disagreement is a bug in one of them.
 *   **Detail:** the full design, with port signatures, the schema specification, the metric table, the test harness, and the rejected alternatives (A1–A42), is in [`docs/designs/distributed-wagering-processor.md`](docs/designs/distributed-wagering-processor.md). That document is frozen; this one is canonical.
 *   **Conventions:** "challenge §N" refers to a section of [`CHALLENGE.md`](CHALLENGE.md). Money amounts are decimal strings with two places.
 
@@ -127,7 +127,15 @@ A round may have several `WIN`s, and a processed `REFUND` may itself be rolled b
 ```
 
 *   `difference = stored − calculated`, signed. `consistent` is true only when `issues` is empty.
-*   Issues: `BALANCE_MISMATCH`; and, as a later addition, `VERSION_MISMATCH`, `CHAIN_GAP`, and `CHAIN_BREAK`.
+*   Issues, each `{ code, details? }`, in this order:
+
+    | Code | Found when | `details` |
+    |---|---|---|
+    | `BALANCE_MISMATCH` | the stored balance differs from the signed sum of the entries | — (the amounts are in the report) |
+    | `VERSION_MISMATCH` | the stored version differs from the highest entry version, or from 1 with no entries | `storedVersion`, `expectedVersion` |
+    | `CHAIN_GAP` | the versions are not contiguous, or the first is not 1 with an `OPENING` entry (2 without one) | `expectedFirstVersion`, `firstVersion`, `missingVersions` (the first 100) |
+    | `CHAIN_BREAK` | the first `balance_before` is not 0, or a `balance_before` differs from the previous `balance_after` | `startsAtZero`, `brokenLinks` |
+
 *   A divergence is logged (IDs and issue codes, no amounts) and counted in `reconciliation_divergences_total{issue}`. Data is never corrected.
 *   The commit-time triggers already keep every normal write consistent, so reconciliation exists for writes that bypass them: a superuser, `session_replication_role = replica`, or a partial restore.
 
@@ -219,11 +227,11 @@ A round may have several `WIN`s, and a processed `REFUND` may itself be rolled b
 *   **Redrive procedure.** Messages whose `failureReason` is `RETRY_BUDGET_EXHAUSTED`, or `UNEXPECTED_ERROR` after its cause is fixed, can be moved back to the input queue unchanged; the inbox and the identities make that safe. Permanent reasons (`VALIDATION_FAILED`, identity conflicts, `MESSAGE_ID_CONFLICT`, `WALLET_NOT_FOUND`) are not redriven: the same message would fail the same way, and the provider has to send a corrected operation.
     1.  **Remove the cause.** For `RETRY_BUDGET_EXHAUSTED`, check that `circuit_state` is closed and that `wallet_lock_timeouts_total` has stopped growing for the wallets involved. For `UNEXPECTED_ERROR`, deploy the fix first; otherwise the message returns to the DLQ on its 3rd receive.
     2.  **Read the DLQ.** `ReceiveMessage` on `wager-transactions-dlq.fifo` with `MessageAttributeNames: ["All"]`, `MessageSystemAttributeNames: ["MessageGroupId"]`, and a visibility timeout long enough for the next two steps. FIFO order holds in the DLQ, so a group's messages arrive in their original order.
-    3.  **Send each redrivable message** to `wager-transactions.fifo` with `SendMessage`: the body unchanged, the same `MessageGroupId`, and a new `MessageDeduplicationId`, such as `<messageId>-redrive-1`. Reusing the original ID is unsafe: inside the input queue's 5-minute deduplication window, SQS accepts the send and drops the message. The envelope `messageId` in the body is unchanged, so the inbox still recognizes the message. A new message starts at receive 1 with its full budget.
+    3.  **Send each redrivable message** to `wager-transactions.fifo` with `SendMessage`: the body unchanged, the same `MessageGroupId`, and a new `MessageDeduplicationId` derived from the DLQ message's own SQS `MessageId`, such as `<MessageId>-redrive`. Reusing the original ID is unsafe: inside the input queue's 5-minute deduplication window, SQS accepts the send and drops the message. The DLQ `MessageId` is new for every DLQ copy, so a message that fails again and is redriven again is never dropped; a resend of the same copy is dropped, and that copy is already in the input queue. The envelope `messageId` in the body is unchanged, so the inbox still recognizes the message. A new message starts at receive 1 with its full budget.
     4.  **Delete it from the DLQ** with its receipt handle, only after the send succeeded. If the operator stops between the two steps, the message is in both queues; redriving it again is safe, because the inbox and the identities give the two copies one effect.
     5.  **Check the outcome.** The operation's status is readable with `GET /providers/:providerId/wagering/transactions/:externalTransactionId`; `sqs_dlq_depth` should fall, and `sqs_dlq_moves_total` should not grow again.
 
-    Permanent messages are reported to the provider and left to expire: the setup keeps the SQS default retention of 4 days on the DLQ. The Stretch redrive script (§11) would automate steps 2 to 4.
+    Permanent messages are reported to the provider and left to expire: the setup keeps the SQS default retention of 4 days on the DLQ. `bun run dlq:redrive` automates steps 2 to 4: it redrives `RETRY_BUDGET_EXHAUSTED` by default, adds `UNEXPECTED_ERROR` with `--include-unexpected`, lists without moving with `--dry-run`, and leaves every other message in the DLQ, visible again when it ends. A FIFO DLQ hides the rest of a group while one of its messages is in flight, so the messages behind a skipped one in the same group wait for that one to be handled.
 
 ### Transactional outbox
 
@@ -379,7 +387,7 @@ Beyond the eight scenarios:
 | §7.1 | Out-of-order references | `resolve-pending-references.spec`, `pending-references`, `out-of-order` |
 | §8 | Per-wallet serialization and the mandatory scenario | `balance-contention`, `duplicate-bet`, `hot-wallet` |
 | §9 | Routes, statuses, reconciliation, and health | `wallets-http`, `wagering-http`, `reconciliation`, `operational`, `observability` |
-| §10 | SQS idempotency, retry, and DLQ | `inbox-redelivery`, `sqs-dlq`, `sqs-ordering`, `crash-after-commit`, `sqs-outage` |
+| §10 | SQS idempotency, retry, and DLQ | `inbox-redelivery`, `sqs-dlq`, `sqs-ordering`, `crash-after-commit`, `sqs-outage`, `redrive-dlq` |
 | §11 | Outbox and the minimum events | `outbox-publisher`, `concurrent-publishers`, `wager-events.spec` |
 | §12 | Logs and the seven metric categories | `observability`, `metrics.spec`, `json-logger.spec` |
 | §13 | Unit, integration, and concurrency layers | the checklist above |
@@ -413,7 +421,7 @@ The whole command, with the two builds, took 2 min 56 s. Task 12 required `test:
     | outbox lag | `outbox_lag_seconds`, `outbox_pending`, `outbox_sender_faults_total` |
     | latency | `wager_processing_duration_seconds` |
 
-    Also: `pending_references`, `reference_failed_total`, `reconciliation_divergences_total`, `bulkhead_rejections_total`, `circuit_state`, and the pool gauges `db_pool_in_use` and `db_pool_waiting`.
+    Also: `pending_references`, `reference_failed_total`, `reconciliation_divergences_total`, `settlement_on_reversed_reference_total` (a `WIN` or `LOSS` processed against a reversed `BET`, counted with its warning log), `bulkhead_rejections_total`, `circuit_state`, and the pool gauges `db_pool_in_use` and `db_pool_waiting`.
 
     *   **Lock conflicts.** `wallet_lock_wait_seconds{channel}` times each waiting wallet lock; a lock that times out is counted by `wallet_lock_timeouts_total` (`55P03`) instead. `statement_timeouts_total` counts `57014`. Both come from the unit of work and the query port, through a `PersistenceObserver` the metrics implement.
     *   **Gauges at scrape.** `outbox_pending`, `outbox_lag_seconds` (age of the oldest unpublished event), `pending_references`, and `sqs_dlq_depth` are read when `/metrics` is scraped, each read with a 1 s timeout and outside the circuits. Only instances that run the publisher or the worker expose them, so scraping every instance does not multiply the load; dashboards take the `max`. A read that fails reports `NaN`, which `max` skips, rather than a stale or a zero value; the scrape itself still answers. The pool gauges are read last, so the scrape's own reads are not counted.
@@ -526,7 +534,6 @@ DLQ-only reasons: `UNEXPECTED_ERROR` (3rd receive) and `RETRY_BUDGET_EXHAUSTED` 
 *   Retention of inbox and outbox rows.
 *   Implemented authentication (designed in §6).
 *   Future extensions, documented but not built: SNS fan-out, a provider registry, ledger balance checkpoints, OpenTelemetry tracing, dashboards.
-*   The Stretch items, not built: a CI job that runs the integration and concurrency layers against service containers; the reconciliation issues `VERSION_MISMATCH`, `CHAIN_GAP`, and `CHAIN_BREAK` (the commit trigger already refuses a broken chain); a `settlement_on_reversed_reference_total` metric; a demo script; and a redrive script (the manual procedure is in §5).
 *   Load testing; if built, it runs as `bun run test:load`.
 
 ## Appendix A: decision log
