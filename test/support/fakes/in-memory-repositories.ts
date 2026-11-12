@@ -1,4 +1,7 @@
-import { WalletAlreadyExists } from '../../../src/application/errors.js';
+import {
+  IdentityRaceError,
+  WalletAlreadyExists,
+} from '../../../src/application/errors.js';
 import type {
   InboxRepository,
   LedgerAggregate,
@@ -63,6 +66,19 @@ export class InMemoryStore {
       const key = `${wallet.playerId}:${wallet.currency}`;
       if (seen.has(key)) throw new WalletAlreadyExists();
       seen.add(key);
+    }
+    const keys = new Set<string>();
+    const externalIds = new Set<string>();
+    for (const t of this.transactions.values()) {
+      if (t.providerId === null) continue;
+      const key = `${t.providerId}:${t.idempotencyKey}`;
+      if (keys.has(key)) throw new IdentityRaceError('idempotency_key');
+      keys.add(key);
+      const externalId = `${t.providerId}:${t.externalTransactionId}`;
+      if (externalIds.has(externalId)) {
+        throw new IdentityRaceError('external_transaction_id');
+      }
+      externalIds.add(externalId);
     }
   }
 }
