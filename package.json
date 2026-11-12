@@ -23,11 +23,20 @@
     "test:e2e": "bun test ./test/"
   },
   "dependencies": {
+    "@aws-sdk/client-sqs": "3.1167.0",
+    "@mikro-orm/core": "7.2.8",
+    "@mikro-orm/migrations": "7.2.8",
+    "@mikro-orm/nestjs": "7.1.0",
+    "@mikro-orm/postgresql": "7.2.8",
     "@nestjs/common": "^12.0.1",
     "@nestjs/core": "^12.0.1",
     "@nestjs/platform-express": "^12.0.1",
+    "@nestjs/resilience": "0.0.3",
+    "@nestjs/terminus": "12.1.0",
+    "prom-client": "15.1.3",
     "reflect-metadata": "^0.2.2",
-    "rxjs": "^7.8.1"
+    "rxjs": "^7.8.1",
+    "zod": "4.6.7"
   },
   "devDependencies": {
     "@nestjs/cli": "^12.0.0",
