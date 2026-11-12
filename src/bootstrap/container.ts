@@ -1,4 +1,6 @@
+import type { SQSClient } from '@aws-sdk/client-sqs';
 import { MikroORM } from '@mikro-orm/postgresql';
+import { ProcessWagerMessage } from '../application/messaging/process-wager-message.js';
 import type { Clock } from '../application/ports/clock.js';
 import type { IdGenerator } from '../application/ports/id-generator.js';
 import type { AppLogger } from '../application/ports/logger.js';
@@ -16,8 +18,19 @@ import { OpenWallet } from '../application/wallets/open-wallet.js';
 import { ReconcileWallet } from '../application/wallets/reconcile-wallet.js';
 import { TrustAllProviderIdentity } from '../infrastructure/auth/trust-all-provider-identity.js';
 import { SystemClock } from '../infrastructure/clock/system-clock.js';
-import type { AppConfig } from '../infrastructure/config/app-config.js';
+import {
+  type AppConfig,
+  queueNames,
+} from '../infrastructure/config/app-config.js';
+import { FaultInjection } from '../infrastructure/fault-injection.js';
 import { UuidV7Generator } from '../infrastructure/ids/uuid-v7-generator.js';
+import { createSqsClient } from '../infrastructure/messaging/sqs-client.js';
+import { SqsDlqMover } from '../infrastructure/messaging/sqs-dlq-mover.js';
+import { SqsQueues } from '../infrastructure/messaging/sqs-queues.js';
+import {
+  SQS_CONSUMER_DEFAULTS,
+  SqsWagerConsumer,
+} from '../infrastructure/messaging/sqs-wager-consumer.js';
 import {
   enabledLevels,
   JsonLogger,
@@ -50,6 +63,7 @@ export type ApplicationOverrides = {
   readonly ids?: IdGenerator;
   readonly retryContention?: ContentionRetry;
   readonly timeouts?: Partial<UnitOfWorkTimeouts>;
+  readonly faults?: FaultInjection;
 };
 
 /** The application graph: every port adapter and use case, built without Nest. */
@@ -72,6 +86,11 @@ export type Application = {
   readonly resolvePendingReferences: ResolvePendingReferences;
   /** Not started here: the workers module starts it when `REFERENCE_WORKER_ENABLED`. */
   readonly referenceWorker: PollingLoop;
+  readonly sqs: SQSClient;
+  readonly queues: SqsQueues;
+  readonly processWagerMessage: ProcessWagerMessage;
+  /** Not started here: the messaging module starts it when `SQS_CONSUMER_ENABLED`. */
+  readonly sqsConsumer: SqsWagerConsumer;
   close(): Promise<void>;
 };
 
@@ -131,6 +150,54 @@ export async function buildApplication(
       }),
   });
 
+  const submitWagerTransaction = new SubmitWagerTransaction(
+    unitOfWork,
+    clock,
+    ids,
+    metrics,
+    appLogger('Wagering'),
+    providerIdentity,
+    requestContext,
+    { referenceTtlMs },
+  );
+
+  const faults = overrides.faults ?? new FaultInjection(config.faultInjection);
+  const sqs = createSqsClient(config);
+  const queues = new SqsQueues(sqs, policies.sqs, queueNames(config));
+  const consumerLogger = appLogger('SqsConsumer');
+  const processWagerMessage = new ProcessWagerMessage(
+    faults.wrapSubmitter(submitWagerTransaction),
+    metrics,
+    consumerLogger,
+    requestContext,
+  );
+  const sqsConsumer = new SqsWagerConsumer({
+    sqs,
+    guard: policies.sqs,
+    queues,
+    process: processWagerMessage,
+    dlq: new SqsDlqMover({
+      sqs,
+      guard: policies.sqs,
+      queues,
+      instanceId: config.instanceId,
+      onMoved: (reason) => metrics.sqsDlqMove(reason),
+    }),
+    metrics,
+    logger: consumerLogger,
+    context: requestContext,
+    faults,
+    circuits: [policies.circuits.postgres, policies.circuits.sqs],
+    settings: {
+      ...SQS_CONSUMER_DEFAULTS,
+      visibilityTimeoutSeconds: config.sqs.visibilityTimeoutSeconds,
+      backoff: {
+        baseMs: config.sqs.backoffBaseMs,
+        capMs: config.sqs.backoffCapMs,
+      },
+    },
+  });
+
   return {
     config,
     orm,
@@ -149,22 +216,19 @@ export async function buildApplication(
       metrics,
       appLogger('Reconciliation'),
     ),
-    submitWagerTransaction: new SubmitWagerTransaction(
-      unitOfWork,
-      clock,
-      ids,
-      metrics,
-      appLogger('Wagering'),
-      providerIdentity,
-      requestContext,
-      { referenceTtlMs },
-    ),
+    submitWagerTransaction,
     wagerQueries: new WagerQueries(queries),
     resolvePendingReferences,
     referenceWorker,
+    sqs,
+    queues,
+    processWagerMessage,
+    sqsConsumer,
     close: async () => {
+      await sqsConsumer.stop();
       await referenceWorker.stop();
       stopListening();
+      sqs.destroy();
       await orm.close(true);
     },
   };

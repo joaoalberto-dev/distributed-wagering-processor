@@ -7,6 +7,7 @@ import {
 import { RequestContextMiddleware } from '../interface/http/request-context.middleware.js';
 import type { Application } from './container.js';
 import { HttpModule } from './http.module.js';
+import { MessagingModule } from './messaging.module.js';
 import { ObservabilityModule } from './observability.module.js';
 import { PersistenceModule } from './persistence.module.js';
 import { WorkersModule } from './workers.module.js';
@@ -24,6 +25,7 @@ export class AppModule implements NestModule {
         ObservabilityModule.register(app),
         HttpModule.register(app),
         WorkersModule.register(),
+        MessagingModule.register(),
       ],
       providers: [{ provide: APP_CONFIG, useValue: app.config }],
       exports: [APP_CONFIG],
