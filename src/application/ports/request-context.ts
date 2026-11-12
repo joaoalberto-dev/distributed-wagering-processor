@@ -13,14 +13,19 @@ export type LogFields = {
   readonly instanceId?: string;
 };
 
+/** Fields to add; an `undefined` value is ignored. */
+export type LogFieldUpdate = {
+  readonly [K in keyof LogFields]?: LogFields[K] | undefined;
+};
+
 /** The fields of the operation in progress, carried across `await`s. */
 export interface RequestContext {
   /** Runs `fn` with `fields` on top of the current context. */
-  run<T>(fields: Partial<LogFields>, fn: () => Promise<T>): Promise<T>;
+  run<T>(fields: LogFieldUpdate, fn: () => Promise<T>): Promise<T>;
   /** The current fields; empty outside any `run`. */
   get(): LogFields;
   /** Adds fields to the current context, such as the wallet once it is known. */
-  set(fields: Partial<LogFields>): void;
+  set(fields: LogFieldUpdate): void;
 }
 
 export const REQUEST_CONTEXT = Symbol('RequestContext');
