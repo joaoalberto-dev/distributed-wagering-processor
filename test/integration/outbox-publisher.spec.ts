@@ -132,9 +132,19 @@ describe('events per outcome, through a spawned process', () => {
       30_000,
       `${count} events of the wallet`,
     );
-    const unpublished: Row[] = await database.owner`
-      SELECT id FROM outbox WHERE wallet_id = ${wallet.id} AND published_at IS NULL`;
-    expect(unpublished).toEqual([]);
+    // The send precedes the commit that records it, so a received event can
+    // still be unpublished for a moment.
+    await waitFor(
+      async () => {
+        const unpublished: Row[] = await database.owner`
+          SELECT id FROM outbox WHERE wallet_id = ${wallet.id} AND published_at IS NULL`;
+        return unpublished.length === 0;
+      },
+      {
+        timeoutMs: 5_000,
+        description: 'every event of the wallet recorded as published',
+      },
+    );
 
     const events = reader.eventsOf(wallet.id);
     const opening = events.find((d) => d.event.data.kind === 'OPENING');
