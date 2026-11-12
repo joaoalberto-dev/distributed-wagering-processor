@@ -1,11 +1,16 @@
 import { IsolationLevel } from '@mikro-orm/core';
 import type { EntityManager, MikroORM } from '@mikro-orm/postgresql';
+import type { Channel } from '../../application/ports/telemetry.js';
 import type {
   TxContext,
   UnitOfWork,
   UnitOfWorkOptions,
 } from '../../application/ports/unit-of-work.js';
-import { classifyPgError } from './pg-error-classifier.js';
+import {
+  classifyPgError,
+  type DatabaseTimeout,
+  timeoutOf,
+} from './pg-error-classifier.js';
 import { MikroOrmInboxRepository } from './repositories/mikro-orm-inbox-repository.js';
 import { MikroOrmLedgerRepository } from './repositories/mikro-orm-ledger-repository.js';
 import { MikroOrmOutboxRepository } from './repositories/mikro-orm-outbox-repository.js';
@@ -39,6 +44,29 @@ export const NO_RETRY: ContentionRetry = (attempt) => attempt();
 /** No policy around the call. */
 export const UNGUARDED: CallGuard = (call) => call();
 
+/** What the persistence adapters measure for the metrics (metric table). */
+export type PersistenceObserver = {
+  /** Seconds spent in a waiting wallet lock (`SELECT … FOR UPDATE`). */
+  walletLockWait(channel: Channel | undefined, seconds: number): void;
+  /** A `lock_timeout` (`55P03`) or `statement_timeout` (`57014`). */
+  databaseTimeout(kind: DatabaseTimeout): void;
+};
+
+export const NO_OBSERVER: PersistenceObserver = {
+  walletLockWait: () => undefined,
+  databaseTimeout: () => undefined,
+};
+
+/** Counts a timeout, if `error` is one, and returns the classified error. */
+export function observeAndClassify(
+  error: unknown,
+  observer: PersistenceObserver,
+): unknown {
+  const timeout = timeoutOf(error);
+  if (timeout !== null) observer.databaseTimeout(timeout);
+  return classifyPgError(error);
+}
+
 /** The repositories of one transaction, all on the same entity manager. */
 export class MikroOrmTxContext implements TxContext {
   readonly wallets: MikroOrmWalletRepository;
@@ -49,8 +77,11 @@ export class MikroOrmTxContext implements TxContext {
   readonly reconciliation: SqlReconciliationReader;
 
   /** `em` is exposed for infrastructure tests only; application code uses the repositories. */
-  constructor(readonly em: EntityManager) {
-    this.wallets = new MikroOrmWalletRepository(em);
+  constructor(
+    readonly em: EntityManager,
+    onLockWait: (seconds: number) => void = () => undefined,
+  ) {
+    this.wallets = new MikroOrmWalletRepository(em, onLockWait);
     this.transactions = new MikroOrmTransactionRepository(em);
     this.ledger = new MikroOrmLedgerRepository(em);
     this.inbox = new MikroOrmInboxRepository(em);
@@ -72,6 +103,7 @@ export class MikroOrmUnitOfWork implements UnitOfWork {
     private readonly retryContention: ContentionRetry = NO_RETRY,
     /** The `postgres` circuit, around each attempt: an open circuit fails fast. */
     private readonly circuit: CallGuard = UNGUARDED,
+    private readonly observer: PersistenceObserver = NO_OBSERVER,
   ) {}
 
   run<T>(
@@ -79,27 +111,32 @@ export class MikroOrmUnitOfWork implements UnitOfWork {
     options: UnitOfWorkOptions,
   ): Promise<T> {
     const attempt = () =>
-      this.circuit(() => this.runOnce(fn, options.mode ?? 'write'));
+      this.circuit(() =>
+        this.runOnce(fn, options.mode ?? 'write', options.channel),
+      );
     return options.retryContention ? this.retryContention(attempt) : attempt();
   }
 
   private async runOnce<T>(
     fn: (tx: TxContext) => Promise<T>,
     mode: 'write' | 'read-only-snapshot',
+    channel: Channel | undefined,
   ): Promise<T> {
     const snapshot = mode === 'read-only-snapshot';
+    const onLockWait = (seconds: number) =>
+      this.observer.walletLockWait(channel, seconds);
     try {
       return await this.orm.em.fork().transactional(
         async (em) => {
           await this.applyTimeouts(em, snapshot);
-          return fn(new MikroOrmTxContext(em));
+          return fn(new MikroOrmTxContext(em, onLockWait));
         },
         snapshot
           ? { isolationLevel: IsolationLevel.REPEATABLE_READ, readOnly: true }
           : { isolationLevel: IsolationLevel.READ_COMMITTED },
       );
     } catch (error) {
-      throw classifyPgError(error);
+      throw observeAndClassify(error, this.observer);
     }
   }
 

@@ -6,9 +6,14 @@ import { walletMapper } from '../mappers/wallet.mapper.js';
 import { WalletRecord } from '../records/wallet.record.js';
 
 export class MikroOrmWalletRepository implements WalletRepository {
-  constructor(private readonly em: EntityManager) {}
+  constructor(
+    private readonly em: EntityManager,
+    /** Seconds a waiting lock took, timed around the locking read. */
+    private readonly onLockWait: (seconds: number) => void = () => undefined,
+  ) {}
 
   async lock(id: string, mode: 'wait' | 'skip-locked'): Promise<Wallet | null> {
+    const started = performance.now();
     const record = await this.em.findOne(
       WalletRecord,
       { id },
@@ -20,6 +25,8 @@ export class MikroOrmWalletRepository implements WalletRepository {
         refresh: true,
       },
     );
+    // A skip-locked read never waits; a timed-out wait throws and is counted as a timeout.
+    if (mode === 'wait') this.onLockWait((performance.now() - started) / 1000);
     return record === null ? null : walletMapper.toDomain(record);
   }
 

@@ -5,6 +5,8 @@ import type {
   RetryClass,
 } from '../../application/messaging/process-wager-message.js';
 import type { Channel, Telemetry } from '../../application/ports/telemetry.js';
+import type { PersistenceObserver } from '../persistence/mikro-orm-unit-of-work.js';
+import type { DatabaseTimeout } from '../persistence/pg-error-classifier.js';
 import type {
   BulkheadGroup,
   Dependency,
@@ -27,7 +29,7 @@ const CIRCUIT_VALUE: Readonly<Record<CircuitState, number>> = {
  * `Telemetry` port and listens to the resilience policies; the gauges read
  * from the database and the queue are added with the workers (task 11).
  */
-export class Metrics implements Telemetry, PolicyListener {
+export class Metrics implements Telemetry, PolicyListener, PersistenceObserver {
   readonly registry = new Registry();
 
   readonly #transactions = this.#counter(
@@ -42,6 +44,21 @@ export class Metrics implements Telemetry, PolicyListener {
     buckets: LATENCY_BUCKETS,
     registers: [this.registry],
   });
+  readonly #lockWait = new Histogram({
+    name: 'wallet_lock_wait_seconds',
+    help: 'Time spent acquiring a waiting wallet row lock',
+    labelNames: ['channel'],
+    buckets: LATENCY_BUCKETS,
+    registers: [this.registry],
+  });
+  readonly #lockTimeouts = this.#counter(
+    'wallet_lock_timeouts_total',
+    'Transactions ended by lock_timeout (55P03)',
+  );
+  readonly #statementTimeouts = this.#counter(
+    'statement_timeouts_total',
+    'Statements ended by statement_timeout (57014)',
+  );
   readonly #replays = this.#counter(
     'idempotent_replays_total',
     'Requests answered with a stored result',
@@ -168,6 +185,15 @@ export class Metrics implements Telemetry, PolicyListener {
   }
   sqsDlqMove(reason: DlqReason): void {
     this.#dlqMoves.inc({ reason });
+  }
+
+  /** Raised by the persistence adapters. */
+  walletLockWait(channel: Channel | undefined, seconds: number): void {
+    this.#lockWait.observe({ channel: channel ?? 'none' }, seconds);
+  }
+  databaseTimeout(kind: DatabaseTimeout): void {
+    if (kind === 'lock') this.#lockTimeouts.inc();
+    else this.#statementTimeouts.inc();
   }
 
   bulkheadRejected(group: BulkheadGroup): void {

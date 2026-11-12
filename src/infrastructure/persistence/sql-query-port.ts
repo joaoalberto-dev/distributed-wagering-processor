@@ -10,8 +10,13 @@ import type { LedgerDirection } from '../../domain/ledger/ledger-direction.js';
 import type { WagerTransactionKind } from '../../domain/transaction/transaction-kind.js';
 import type { WagerTransactionStatus } from '../../domain/transaction/transaction-status.js';
 import type { ResultDetails } from '../../domain/transaction/wager-transaction.js';
-import { type CallGuard, UNGUARDED } from './mikro-orm-unit-of-work.js';
-import { classifyPgError } from './pg-error-classifier.js';
+import {
+  type CallGuard,
+  NO_OBSERVER,
+  observeAndClassify,
+  type PersistenceObserver,
+  UNGUARDED,
+} from './mikro-orm-unit-of-work.js';
 import { query } from './repositories/sql.js';
 
 type WalletRow = {
@@ -72,6 +77,7 @@ export class SqlQueryPort implements QueryPort {
     private readonly orm: MikroORM,
     /** The `postgres` circuit. */
     private readonly circuit: CallGuard = UNGUARDED,
+    private readonly observer: PersistenceObserver = NO_OBSERVER,
   ) {}
 
   async wallet(id: string): Promise<WalletView | null> {
@@ -158,7 +164,7 @@ export class SqlQueryPort implements QueryPort {
           .fork()
           .transactional((em) => fn(em), { readOnly: true });
       } catch (error) {
-        throw classifyPgError(error);
+        throw observeAndClassify(error, this.observer);
       }
     });
   }

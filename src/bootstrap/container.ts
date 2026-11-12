@@ -136,8 +136,9 @@ export async function buildApplication(
     },
     overrides.retryContention ?? policies.httpContentionRetry,
     policies.postgres,
+    metrics,
   );
-  const queries = new SqlQueryPort(orm, policies.postgres);
+  const queries = new SqlQueryPort(orm, policies.postgres, metrics);
   const clock = overrides.clock ?? new SystemClock();
   const ids = overrides.ids ?? new UuidV7Generator();
   const providerIdentity = new TrustAllProviderIdentity(

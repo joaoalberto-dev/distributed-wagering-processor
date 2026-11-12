@@ -49,6 +49,24 @@ describe('Metrics', () => {
     );
   });
 
+  it('records wallet lock waits by channel and counts database timeouts', async () => {
+    const metrics = new Metrics();
+    metrics.walletLockWait('sqs', 0.3);
+    metrics.walletLockWait(undefined, 0.001);
+    metrics.databaseTimeout('lock');
+    metrics.databaseTimeout('lock');
+    metrics.databaseTimeout('statement');
+
+    const text = await metrics.render();
+    expect(text).toContain('wallet_lock_wait_seconds_count{channel="sqs"} 1');
+    expect(text).toContain(
+      'wallet_lock_wait_seconds_bucket{le="0.5",channel="sqs"} 1',
+    );
+    expect(text).toContain('wallet_lock_wait_seconds_count{channel="none"} 1');
+    expect(text).toContain('wallet_lock_timeouts_total 2');
+    expect(text).toContain('statement_timeouts_total 1');
+  });
+
   it('keeps registries of separate instances apart', async () => {
     const first = new Metrics();
     first.inboxDuplicate();

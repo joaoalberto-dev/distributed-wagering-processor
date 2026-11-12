@@ -269,6 +269,60 @@ describe('contention', () => {
       await counting.close();
     }
   });
+
+  it('reports lock waits by channel, lock timeouts, and statement timeouts', async () => {
+    const { wallet } = await openWallet(database.owner);
+    const observed = await startInProcess(infrastructure, {
+      overrides: { timeouts: { lockTimeoutMs: 100 } },
+    });
+    const sample = async (name: string) => {
+      const line = (await observed.metrics.render())
+        .split('\n')
+        .find((l) => l.startsWith(`${name} `));
+      return Number(line?.split(' ').at(-1) ?? 0);
+    };
+    try {
+      await observed.unitOfWork.run(
+        (tx) => tx.wallets.lock(wallet.id as string, 'wait'),
+        { retryContention: false, channel: 'sqs' },
+      );
+      expect(
+        await sample('wallet_lock_wait_seconds_count{channel="sqs"}'),
+      ).toBe(1);
+
+      await database.owner.begin(async (tx) => {
+        await tx`SELECT 1 FROM wallets WHERE id = ${wallet.id} FOR UPDATE`;
+        await rejectionOf(
+          observed.unitOfWork.run(
+            (tx2) => tx2.wallets.lock(wallet.id as string, 'wait'),
+            { retryContention: false, channel: 'http' },
+          ),
+        );
+      });
+      expect(await sample('wallet_lock_timeouts_total')).toBe(1);
+      // A timed-out wait is a timeout, not a wait.
+      expect(
+        await sample('wallet_lock_wait_seconds_count{channel="http"}'),
+      ).toBe(0);
+
+      const statement = await rejectionOf(
+        observed.unitOfWork.run(
+          async (tx) => {
+            await sqlIn(
+              tx,
+              "SELECT set_config('statement_timeout', '50ms', true)",
+            );
+            await sqlIn(tx, 'SELECT pg_sleep(1)');
+          },
+          { retryContention: false },
+        ),
+      );
+      expect(statement).toBeInstanceOf(ContentionError);
+      expect(await sample('statement_timeouts_total')).toBe(1);
+    } finally {
+      await observed.close();
+    }
+  });
 });
 
 describe('the worker reads', () => {
