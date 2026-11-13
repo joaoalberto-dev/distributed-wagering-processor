@@ -435,6 +435,8 @@ async function main() {
     const fixturePath = join(folder, 'fixtures.json');
     const samplePath = join(folder, 'samples.json.gz');
     const summaryPath = join(folder, 'summary.json');
+    const reportPath = join(folder, 'report.html');
+
     await Bun.write(
       fixturePath,
       JSON.stringify({
@@ -489,9 +491,14 @@ async function main() {
       ],
       {
         env: {
+          ...process.env,
           PATH: process.env.PATH,
           LOAD_FIXTURES: fixturePath,
           LOAD_SUMMARY: summaryPath,
+          K6_WEB_DASHBOARD: 'true',
+          K6_WEB_DASHBOARD_PORT: '-1',
+          K6_WEB_DASHBOARD_EXPORT: reportPath,
+          K6_WEB_DASHBOARD_PERIOD: '1s',
         },
         stdout: 'inherit',
         stderr: 'inherit',
@@ -526,7 +533,15 @@ async function main() {
               String(error),
             );
           });
+
     const exit = await traffic.exited.finally(() => active.abort());
+
+    if (await Bun.file(reportPath).exists()) {
+      console.log(`Performance report: ${reportPath}`);
+    } else {
+      console.log('HTML report unavailable (test may be too short).');
+    }
+
     await snapshots;
     await capture(targets, folder, 'traffic-ended', sql, pids);
     const summary = (await Bun.file(summaryPath).json()) as Summary;
