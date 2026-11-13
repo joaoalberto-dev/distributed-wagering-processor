@@ -54,6 +54,39 @@ The defaults match the compose services, so no `.env` is required. [.env.example
 
 Stop the application and workers, then use `bun run migrate:down` with the configured owner connection. Migration 0007 restores the old constraint only if every rejected transaction has a balance snapshot in the same currency as its operation. If the migration refuses, leave 0007 applied and keep or redeploy an application version that supports those snapshots. The refusal preserves the schema, migration record, and financial history. A rollback to 0006 with cross-currency snapshots is incompatible with the old constraint. Use `down --all` only for disposable databases.
 
+## Load testing
+
+Run the opt-in k6 campaign locally with Bun and the loopback PostgreSQL and MiniStack services. The runner creates a database, application role and three FIFO queues named for the run, then launches three application processes with their normal workers. It uses fresh wallet and transaction identifiers and deletes the resources it created when it exits. The PostgreSQL owner needs permission to create databases and roles. Use a development instance of each service.
+
+```bash
+docker compose up -d postgres ministack
+# Linux amd64. On other platforms use the matching Grafana k6 v1.4.2 release.
+docker run --rm --entrypoint /bin/sh grafana/k6:1.4.2 -c 'cat "$(command -v k6)"' > /tmp/wagering-k6
+chmod +x /tmp/wagering-k6
+export K6_BIN=/tmp/wagering-k6
+bun run test:load
+LOAD_PROFILE=distributed LOAD_RATE=40 LOAD_SECONDS=20 LOAD_WALLETS=60 bun run test:load
+LOAD_PROFILE=hot LOAD_RATE=35 LOAD_SECONDS=20 bun run test:load
+LOAD_PROFILE=mixed LOAD_RATE=30 LOAD_SECONDS=20 bun run test:load
+LOAD_PROFILE=saturation LOAD_RATE=35 LOAD_SECONDS=15 LOAD_VUS=90 bun run test:load
+```
+
+| Profile | Measured traffic |
+|---|---|
+| `smoke` (default) | 12 iterations with three VUs across the default mix |
+| `distributed` | BETs spread across wallets, with a ramp and a steady stage |
+| `hot` | Four of every five workloads on one wallet, with BETs and concurrent replays alongside traffic to other wallets |
+| `mixed` | BET, WIN, LOSS, REFUND, ROLLBACK, a REFUND arriving before its BET, concurrent replays, 409 conflicts and currency mismatch rejections |
+| `saturation` | Hot-wallet routing with the mixed workload and three ramp stages targeting one, two and four times the base arrival rate, then drain |
+
+`LOAD_RATE` is the target workload iterations per second (default 20). An iteration can make several requests. `LOAD_SECONDS` sets the steady stage or each saturation stage (default 10). `LOAD_VUS` sets the arrival executor's VU allocation (default 60). `LOAD_WALLETS` defaults to 30, or six for smoke. `LOAD_SEED` defaults to 41. `LOAD_MIX` accepts a comma-separated list of `bet,replay,rejection,mixed` entries. Repeating a name increases its share. To choose the topology, set `LOAD_TARGET_URLS` to at least three distinct, unused loopback HTTP URLs. The runner binds those ports to its own processes. `DATABASE_URL`, `DATABASE_OWNER_URL` and `AWS_ENDPOINT_URL` can select alternate loopback services.
+
+The command fails for incomplete started workloads, unexpected outcomes, ledger or event mismatches, failed reconciliation, or a drain that exceeds `LOAD_DRAIN_SECONDS` (default 60). A 503 can be retried twice with the same key. The samples retain each attempt. Set `LOAD_MAX_P95_MS` and `LOAD_MAX_DROPPED` when comparing to a baseline collected on the same topology. The defaults impose correctness and completion checks without a latency or dropped-iteration target.
+
+The output directory `load-results/<run-id>/` (override the parent with `LOAD_RESULTS`) contains k6 samples and summary, a machine-readable run report, verification results, per-process Prometheus scrapes and resource snapshots. Compare planned requests per second, achieved HTTP requests per second and unique processed transactions per second separately. Use the instance, operation, lane, variant and status breakdown to check distribution, shedding and quiet-wallet progress. Dropped iterations measure work the generator did not start. The campaign drives HTTP traffic. It measures outbox and pending-reference recovery with the normal workers and leaves SQS ingress throughput unmeasured. See the [recorded campaign](ARCHITECTURE.md#load-campaign).
+
+The runner cleans up on normal exit, Ctrl-C and SIGTERM. After a forced kill, stop any remaining processes for that run and remove the database, role and queues with its exact run suffix. Generated results can be removed independently.
+
 ## Tests
 
 ```bash

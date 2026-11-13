@@ -2,7 +2,7 @@
 
 This document describes the Distributed Wagering Processor: what it guarantees, how, and at what cost. The main body describes the current design, organized by the evaluation areas of the challenge. Appendix A keeps the decision log in chronological order, including decisions that were later replaced.
 
-*   **Status:** §7 maps the challenge requirements to automated evidence and records the post-audit run for [project tasks 15–19](https://github.com/users/joaoalberto-dev/projects/3). The integration and concurrency evidence uses PostgreSQL and MiniStack. Migration 0007 has a documented downgrade precondition for cross-currency rejection history.
+*   **Status:** §7 maps the challenge requirements to automated evidence and records the post-audit run for [project tasks 15–19](https://github.com/users/joaoalberto-dev/projects/3). The integration and concurrency evidence uses PostgreSQL and MiniStack. Migration 0007 has a documented downgrade precondition for cross-currency rejection history. The optional k6 extension is documented under [Load campaign](#load-campaign).
 *   **Detail:** the full design, with port signatures, the schema specification, the metric table, the test harness, and the rejected alternatives (A1–A42), is in [`docs/designs/distributed-wagering-processor.md`](docs/designs/distributed-wagering-processor.md). That document is frozen; this one is canonical.
 *   **Conventions:** "challenge §N" refers to a section of [`CHALLENGE.md`](CHALLENGE.md). Money amounts are decimal strings with two places.
 
@@ -422,6 +422,32 @@ The historical task 14 run of `bun run test:all` on 2026-11-12, from commit `7ba
 
 The whole command, with the two builds, took 2 min 58 s. Task 12 required `test:all` to pass three times in a row; it did on the same machine the same day, from commit `2f58ab8`, with integration and concurrency times between 67 s and 103 s. The first run for this record failed once, in `outbox-publisher`, on a race in the spec itself; decision 40 describes it and its fix.
 
+### Load campaign
+
+`bun run test:load` separates fixture creation, measured HTTP traffic and financial verification. Bun starts the normal application workers and a reader for the isolated events queue. k6 checks response status and replay behavior. Bun derives the expected transaction and event sets from the configured workload, rebuilds every ledger with integer minor units, checks the outbox against received event IDs and bodies, and calls reconciliation for every wallet. The pending-reference and outbox drain has a 60 s default deadline. Replays after subsequent balance movements must preserve the stored snapshot and leave transaction, ledger and outbox counts unchanged.
+
+On 2026-11-12, the campaign ran on the same host and service versions as the post-audit run. It used three Bun 1.4.4 application processes and k6 1.4.2 from the Grafana Docker image, all on the same Linux host. PostgreSQL and MiniStack had no explicit CPU or memory limits. The commands in the [README](README.md#load-testing) reproduce the profiles with seed 41. These are local baseline measurements. Both achieved rates use the k6 traffic time, including its graceful stop. Planned HTTP rates are estimated from the arrival schedule and nominal requests per workload, before retries.
+
+| Profile | Commit | Planned req/s | Achieved req/s | Unique processed/s | p50 / p95 / p99 ms | Dropped iterations | Drain s |
+|---|---|---:|---:|---:|---:|---:|---:|
+| Smoke | `3206444` | — | 107.6 | 78.2 | 24.8 / 40.4 / 44.5 | 0 | 0.94 |
+| Distributed | `9f2f62a` | 34.9 | 34.9 | 34.9 | 12.7 / 35.1 / 109.0 | 0 | 0.11 |
+| Hot wallet | `d8e3204` | 51.0 | 51.0 | 30.6 | 12.2 / 26.9 / 101.5 | 0 | 0.32 |
+| Mixed | `d8e3204` | 72.2 | 72.0 | 52.4 | 13.7 / 24.9 / 41.9 | 0 | 0.22 |
+| Saturation | `3206444` | 160.9 | 79.3 | 57.7 | 635.8 / 1387.9 / 1784.6 | 1,235 | 12.90 |
+
+All five runs passed financial verification and had zero unexpected responses and zero HTTP 503s. The saturation run completed 1,397 workloads, verified 3,142 operations and 5,995 events, and reconciled 30 wallets. All runs ended with zero pending references, unpublished events and DLQ messages. In-flight saturation samples saw up to 213 pending references and 67 unpublished events. The default 60 s drain deadline allows for the observed local backlog. Performance thresholds stay opt-in for comparisons against this baseline.
+
+The machine-readable reports, verification results and original k6 samples are retained under `load-results/` with these run IDs.
+
+- Smoke · `load-01a1d28e-12a4-71a4-8e7c-79a9e59af9d9`
+- Distributed · `load-01a1d28d-7418-743f-88ea-2447f54cd7a7`
+- Hot wallet · `load-01a1d28b-470f-701a-b1b6-0632e1562e29`
+- Mixed · `load-01a1d28b-cda0-7025-a2d3-af2a7456464c`
+- Saturation · `load-01a1d28e-32b0-7623-8330-a2834fc57942`
+
+The saturation profile exposed generator exhaustion as well as longer HTTP waits. The local rate and latency figures describe this setup and workload. HTTP load exercises normal reference resolution and event publication, while functional SQS scenarios cover delivery behavior. SQS ingress throughput remains unmeasured. The opt-in campaign stays outside the regular PR checks.
+
 ## 8. Observability
 
 *   **Logs.** JSON through a `ConsoleLogger` subclass. An `AsyncLocalStorage` context adds `correlationId`, `requestId`, `messageId`, `sqsMessageId`, `transactionId`, `walletId`, `providerId`, and `instanceId`. Amounts, balances, and payloads are never logged.
@@ -539,7 +565,7 @@ DLQ-only reasons: `UNEXPECTED_ERROR` (3rd receive) and `RETRY_BUDGET_EXHAUSTED` 
 | Platform behavior on Bun (MikroORM 7, MiniStack, `@nestjs/resilience` 0.0.3) | Guarantees that depend on it fail | Every item of the platform spike passed, so no fallback was needed; `platform.spec` keeps them as a regression test for upgrades. |
 | SQS behavior is verified only against MiniStack | AWS SQS may differ in deduplication, visibility, throttling, or batch answers | The design relies only on documented SQS FIFO behavior, and `platform.spec` checks each behavior it uses; a run of the integration and concurrency layers against AWS SQS belongs before production. |
 | Tests wait on conditions with fixed limits (for example 60 s for recovery) | A much slower machine can fail a spec that would pass with more time | The limits are well above the measured times in §7; each one is named in its timeout error. |
-| No load test | Throughput, tail latency, and the instance count a given load needs are unmeasured | Out of scope (below); the metrics in §8 are what a load test would read. |
+| Local HTTP load measurements | Throughput and latency depend on the workload, hardware and generator capacity | §7 records a local k6 baseline and generator drops. AWS SQS ingress and production capacity remain unmeasured. |
 
 ### Non-goals
 
@@ -550,7 +576,6 @@ DLQ-only reasons: `UNEXPECTED_ERROR` (3rd receive) and `RETRY_BUDGET_EXHAUSTED` 
 *   Retention of inbox and outbox rows.
 *   Implemented authentication (designed in §6).
 *   Future extensions, documented but not built: SNS fan-out, a provider registry, ledger balance checkpoints, OpenTelemetry tracing, dashboards.
-*   Load testing; if built, it runs as `bun run test:load`.
 
 ## Appendix A: decision log
 
