@@ -6,6 +6,8 @@ import { SQL } from 'bun';
 import { afterAll, beforeAll, describe, expect, it } from 'bun:test';
 import { LATEST_MIGRATION, migrations } from '../../migrations/index.js';
 import { migrate } from '../../scripts/migrate.js';
+import { insertRow, transactionRow, walletRow } from '../support/database.js';
+import { rejectionOf } from '../support/rejection-of.js';
 import { useInfrastructure } from '../support/infrastructure.js';
 
 const infrastructure = useInfrastructure('migrations');
@@ -93,5 +95,53 @@ describe('migrations', () => {
     const rows: { name: string }[] = await scratch`
       SELECT name FROM mikro_orm_migrations ORDER BY id DESC LIMIT 1`;
     expect(rows.map((row) => row.name)).toEqual([LATEST_MIGRATION]);
+  });
+
+  it('downgrades with compatible data and preserves incompatible rejection history on refusal', async () => {
+    const wallet = walletRow();
+    await insertRow(scratch, 'wallets', wallet);
+    const rejection = {
+      status: 'REJECTED',
+      result_balance_amount: '0.00',
+      result_balance_currency: 'BRL',
+    };
+    const compatible = transactionRow(wallet, {
+      ...rejection,
+      failure_code: 'INSUFFICIENT_FUNDS',
+    });
+    await insertRow(scratch, 'wager_transactions', compatible);
+    const snapshot = () => scratch`
+      SELECT id, status, failure_code, currency, result_balance_amount::text,
+        result_balance_currency, processed_at FROM wager_transactions ORDER BY id`;
+    const compatibleHistory = await snapshot();
+    expect(await migrate('down', scratchUrl)).toEqual([LATEST_MIGRATION]);
+    expect(await snapshot()).toEqual(compatibleHistory);
+    expect(await migrate('up', scratchUrl)).toEqual([LATEST_MIGRATION]);
+
+    const mismatch = transactionRow(wallet, {
+      ...rejection,
+      currency: 'USD',
+      failure_code: 'CURRENCY_MISMATCH',
+    });
+    await insertRow(scratch, 'wager_transactions', mismatch);
+    const history = await snapshot();
+    const schema = () => scratch`
+      SELECT pg_get_constraintdef(oid) AS definition FROM pg_constraint
+      WHERE conname = 'wager_transactions_result_check'`;
+    const definition = await schema();
+    expect(String(await rejectionOf(migrate('down', scratchUrl)))).toContain(
+      'Cannot downgrade migration 0007',
+    );
+    expect(await snapshot()).toEqual(history);
+    expect(await schema()).toEqual(definition);
+    expect(await migrate('up', scratchUrl)).toEqual([]);
+    expect(
+      String(
+        await rejectionOf(scratch`
+      UPDATE wager_transactions SET result_balance_amount = 1 WHERE id = ${mismatch.id}
+    `),
+      ),
+    ).toContain('can no longer change');
+    expect(await snapshot()).toEqual(history);
   });
 });

@@ -34,6 +34,20 @@ export class Migration0007RejectionSnapshotCurrency extends Migration {
   }
 
   override down(): void {
+    // Hold the same lock needed for the constraint change across the check.
+    this.addSql('LOCK TABLE wager_transactions IN ACCESS EXCLUSIVE MODE');
+    this.addSql(`
+      DO $$
+      BEGIN
+        IF EXISTS (
+          SELECT 1 FROM wager_transactions
+          WHERE status = 'REJECTED'
+            AND result_balance_currency IS DISTINCT FROM currency
+        ) THEN
+          RAISE EXCEPTION 'Cannot downgrade migration 0007: rejected transactions have a balance snapshot in a different currency'
+            USING HINT = 'Keep migration 0007 applied to preserve the rejection history.';
+        END IF;
+      END $$`);
     this.addSql(
       'ALTER TABLE wager_transactions DROP CONSTRAINT wager_transactions_result_check',
     );

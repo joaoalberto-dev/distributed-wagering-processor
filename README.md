@@ -50,6 +50,10 @@ The defaults match the compose services, so no `.env` is required. [.env.example
 | `bun run demo` | Checks the main guarantees against the three `app` containers, including a `SIGKILL` of `app-2` (`--skip-crash` leaves it out) |
 | `bun run dlq:redrive` | Moves DLQ messages that failed for a retryable reason back to the input queue (`--include-unexpected`, `--dry-run`; [ARCHITECTURE.md §5](ARCHITECTURE.md#sqs-consumption)) |
 
+### Rolling back migration 0007
+
+Stop the application and workers, then use `bun run migrate:down` with the configured owner connection. Migration 0007 restores the old constraint only if every rejected transaction has a balance snapshot in the same currency as its operation. If the migration refuses, leave 0007 applied and keep or redeploy an application version that supports those snapshots. The refusal preserves the schema, migration record, and financial history. A rollback to 0006 with cross-currency snapshots is incompatible with the old constraint. Use `down --all` only for disposable databases.
+
 ## Tests
 
 ```bash
