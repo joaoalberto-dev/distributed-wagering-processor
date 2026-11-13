@@ -26,7 +26,8 @@
     "test:integration": "nest build && bun test --timeout 60000 ./test/integration/",
     "test:concurrency": "nest build && bun test --timeout 180000 ./test/concurrency/",
     "test:all": "bun run test && bun run test:integration && bun run test:concurrency",
-    "check": "bun run typecheck && bun run lint && bun run format:check && bun run test"
+    "check": "bun run typecheck && bun run lint && bun run format:check && bun run test",
+    "test:load": "nest build && bun scripts/load/run.ts"
   },
   "dependencies": {
     "@aws-sdk/client-sqs": "3.1167.0",
