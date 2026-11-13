@@ -222,7 +222,8 @@ A round may have several `WIN`s, and a processed `REFUND` may itself be rolled b
     *   An SQS call with no HTTP answer, a 5xx, or throttling is an `sqs` outage; any other 4xx leaves unchanged and counts as unexpected. The consumer receives nothing while the `postgres` or the `sqs` circuit is open.
 
 *   **One DLQ path.**
-    *   The application moves a message itself: it sends the body unchanged to the DLQ with the original group, a deduplication ID (the envelope `messageId`, or the SQS `MessageId` for an invalid envelope), and the attributes `failureReason`, `receiveCount`, `instanceId`, and `errorClass` (`contention`, `outage`, `unexpected`, or `permanent`), then deletes the original.
+    *   The application moves a message itself: it sends the body unchanged to the DLQ with the original group, the source SQS `MessageId` as its deduplication ID, and the attributes `failureReason`, `receiveCount`, `instanceId`, and `errorClass` (`contention`, `outage`, `unexpected`, or `permanent`), then deletes the original.
+    *   `sqs_dlq_moves_total{reason}` counts successful DLQ send calls, including resends accepted within the FIFO deduplication window. It increments before source deletion.
     *   A failed delete, visibility change, or DLQ move is logged and left to the visibility timeout: the message comes back as an inbox duplicate, or is moved again and dropped by the DLQ's deduplication window.
     *   Native redrive at 50 receives is only a backstop for processes that die before classifying.
 *   **Redrive procedure.** Messages whose `failureReason` is `RETRY_BUDGET_EXHAUSTED`, or `UNEXPECTED_ERROR` after its cause is fixed, can be moved back to the input queue unchanged; the inbox and the identities make that safe. Permanent reasons (`VALIDATION_FAILED`, identity conflicts, `MESSAGE_ID_CONFLICT`, `WALLET_NOT_FOUND`) are not redriven: the same message would fail the same way, and the provider has to send a corrected operation.

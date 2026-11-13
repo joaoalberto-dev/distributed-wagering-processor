@@ -3,6 +3,11 @@
  * process. The backoff is shortened to whole seconds and the lock timeout to
  * 200 ms, so the budgets run out within the spec's time.
  */
+import {
+  ChangeMessageVisibilityCommand,
+  ReceiveMessageCommand,
+} from '@aws-sdk/client-sqs';
+import { SqsDlqMover } from '../../src/infrastructure/messaging/sqs-dlq-mover.js';
 import { afterAll, beforeAll, describe, expect, it } from 'bun:test';
 import { metricValue, openWallet, type Wallet } from '../support/cluster.js';
 import { useDatabase } from '../support/database.js';
@@ -25,6 +30,7 @@ const infrastructure = useInfrastructure('sqs-dlq', {
   },
 });
 const database = useDatabase(infrastructure);
+const moveInfrastructure = useInfrastructure('dlq-delete-retry');
 
 let app: SpawnedApp;
 let http: HttpClient;
@@ -83,6 +89,98 @@ describe('permanent errors', () => {
     expect(
       await metric('sqs_dlq_moves_total{reason="VALIDATION_FAILED"}'),
     ).toBe(before + 2);
+  });
+
+  it('preserves both conflicting deliveries for the same envelope ID', async () => {
+    const wallet = await open();
+    const first = envelopeOf(wagerBody(wallet, { money: brl('1.00') }));
+    const conflicts = ['2.00', '3.00'].map((amount) =>
+      JSON.stringify({ ...first, data: { ...first.data, money: brl(amount) } }),
+    );
+    await queues.sendBatch([first, ...conflicts], wallet.id);
+    for (const body of conflicts) {
+      expect(
+        await queues.deadLetter((message) => message.body === body),
+      ).toMatchObject({
+        body,
+        groupId: wallet.id,
+        failureReason: 'MESSAGE_ID_CONFLICT',
+        instanceId: INSTANCE_ID,
+        errorClass: 'permanent',
+      });
+    }
+    await queues.drained();
+    const [row] = await database.app`
+      SELECT balance::text, version, (SELECT count(*)::int
+        FROM wallet_ledger_entries WHERE wallet_id = wallets.id) AS entries
+      FROM wallets WHERE id = ${wallet.id}`;
+    expect(row).toEqual({ balance: '99.00', version: 2, entries: 2 });
+    await expectReconciled(http, [wallet.id]);
+  });
+
+  it('can resend after an accepted DLQ send and a failed source delete', async () => {
+    const { sqs, queueUrls } = moveInfrastructure;
+    const moveQueues = new TestQueues(moveInfrastructure);
+    const body = 'invalid envelope awaiting source deletion';
+    const id = await moveQueues.send(body);
+    const receive = async () => {
+      const result = await sqs.send(
+        new ReceiveMessageCommand({
+          QueueUrl: queueUrls.input,
+          WaitTimeSeconds: 2,
+          VisibilityTimeout: 10,
+        }),
+      );
+      const message = result.Messages?.[0];
+      if (message === undefined) throw new Error('No source delivery received');
+      expect(message.MessageId).toBe(id);
+      return message;
+    };
+    const original = await receive();
+    let sends = 0;
+    let injectFailure = true;
+    const mover = new SqsDlqMover({
+      sqs,
+      queues: { url: (name) => Promise.resolve(queueUrls[name]) },
+      instanceId: INSTANCE_ID,
+      guard: (call) => {
+        if (sends === 1 && injectFailure) {
+          injectFailure = false;
+          return Promise.reject(new Error('injected delete failure'));
+        }
+        return call();
+      },
+      onMoved: () => {
+        sends += 1;
+      },
+    });
+    const move = {
+      groupId: 'raw',
+      reason: 'VALIDATION_FAILED',
+      errorClass: 'permanent',
+    } as const;
+    await expect(
+      mover.move({ ...move, message: original, receiveCount: 1 }),
+    ).rejects.toThrow('injected delete failure');
+    await sqs.send(
+      new ChangeMessageVisibilityCommand({
+        QueueUrl: queueUrls.input,
+        ReceiptHandle: original.ReceiptHandle,
+        VisibilityTimeout: 0,
+      }),
+    );
+    await mover.move({ ...move, message: await receive(), receiveCount: 2 });
+    await moveQueues.drained();
+    expect(sends).toBe(2);
+    expect(await moveQueues.deadLetters()).toMatchObject([
+      {
+        body,
+        groupId: 'raw',
+        receiveCount: 1,
+        failureReason: 'VALIDATION_FAILED',
+      },
+    ]);
+    expect(await moveQueues.deadLetters()).toHaveLength(1);
   });
 
   it('moves identity conflicts and an unknown wallet on the first receive', async () => {

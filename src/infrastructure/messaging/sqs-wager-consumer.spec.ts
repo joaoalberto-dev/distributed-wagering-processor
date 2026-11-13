@@ -240,13 +240,13 @@ describe('SqsWagerConsumer', () => {
         reason: 'UNEXPECTED_ERROR',
         errorClass: 'unexpected',
         receiveCount: 3,
-        deduplicationId: 'a1',
+        message: { MessageId: 'sqs-a1' },
         groupId: 'A',
       },
     ]);
   });
 
-  it('moves a permanent outcome to the DLQ with the envelope messageId', async () => {
+  it('moves a permanent outcome to the DLQ with the original delivery', async () => {
     const { sqs, consumer, moves } = setup(() =>
       Promise.resolve({ kind: 'dlq', reason: 'WALLET_NOT_FOUND' }),
     );
@@ -256,11 +256,11 @@ describe('SqsWagerConsumer', () => {
     expect(moves[0]).toMatchObject({
       reason: 'WALLET_NOT_FOUND',
       errorClass: 'permanent',
-      deduplicationId: 'a1',
+      message: { MessageId: 'sqs-a1' },
     });
   });
 
-  it('moves an invalid envelope to the DLQ with the SQS MessageId, without processing it', async () => {
+  it('moves an invalid envelope to the DLQ without processing it', async () => {
     const { sqs, consumer, processed, moves } = setup();
     const invalid = { ...message('a1', 'A'), Body: '{"messageId":"a1"}' };
     const notJson = { ...message('a2', 'A'), Body: 'not json' };
@@ -268,7 +268,7 @@ describe('SqsWagerConsumer', () => {
     start(consumer);
     await until(() => moves.length === 2);
     expect(processed).toEqual([]);
-    expect(moves.map((m) => [m.reason, m.deduplicationId])).toEqual([
+    expect(moves.map((m) => [m.reason, m.message.MessageId])).toEqual([
       ['VALIDATION_FAILED', 'sqs-a1'],
       ['VALIDATION_FAILED', 'sqs-a2'],
     ]);

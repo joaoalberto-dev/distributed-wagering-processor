@@ -217,7 +217,6 @@ export class SqsWagerConsumer {
         reason: 'VALIDATION_FAILED',
         errorClass: 'permanent',
         receiveCount,
-        deduplicationId: message.MessageId ?? 'unknown',
         groupId,
       });
       return 'done';
@@ -241,7 +240,6 @@ export class SqsWagerConsumer {
           reason: outcome.reason,
           errorClass: 'permanent',
           receiveCount,
-          deduplicationId: parsed.messageId,
           groupId,
         });
         return 'done';
@@ -257,7 +255,6 @@ export class SqsWagerConsumer {
             reason: decision.reason,
             errorClass: outcome.errorClass,
             receiveCount,
-            deduplicationId: parsed.messageId,
             groupId,
           });
           return 'done';

@@ -19,8 +19,6 @@ export type DlqMove = {
   readonly reason: DlqReason;
   readonly errorClass: DlqErrorClass;
   readonly receiveCount: number;
-  /** The envelope `messageId`, or the SQS `MessageId` when the envelope is invalid. */
-  readonly deduplicationId: string;
   /** The original `MessageGroupId`. */
   readonly groupId: string;
 };
@@ -51,6 +49,8 @@ export class SqsDlqMover {
 
   async move(move: DlqMove): Promise<void> {
     const { sqs, guard, queues, instanceId } = this.options;
+    const sourceMessageId = move.message.MessageId;
+    if (!sourceMessageId) throw new Error('SQS delivery has no MessageId');
     const deadLetterQueueUrl = await queues.url('deadLetter');
     await guard(() =>
       sqs.send(
@@ -58,7 +58,7 @@ export class SqsDlqMover {
           QueueUrl: deadLetterQueueUrl,
           MessageBody: move.message.Body ?? '',
           MessageGroupId: move.groupId,
-          MessageDeduplicationId: move.deduplicationId,
+          MessageDeduplicationId: sourceMessageId,
           MessageAttributes: {
             failureReason: attribute(move.reason),
             receiveCount: attribute(String(move.receiveCount)),

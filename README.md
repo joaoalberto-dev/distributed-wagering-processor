@@ -22,6 +22,9 @@ bun run start:dev                                # the app on http://localhost:3
 
 `setup` runs the migrations as the owner role, creates the `wagering_app` role (`SELECT`, `INSERT` and `UPDATE` only), and creates the queues `wager-transactions.fifo`, `wager-transactions-dlq.fifo` and `wagering-events.fifo`. It is idempotent, so running it again is safe.
 
+Application DLQ sends deduplicate by the source SQS `MessageId`. `sqs_dlq_moves_total{reason}` counts accepted sends, including deduplicated resends, before the source message is deleted.
+
+
 To run three instances from the built image, on ports 3001 to 3003:
 
 ```bash

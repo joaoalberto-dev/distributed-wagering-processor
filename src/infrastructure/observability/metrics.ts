@@ -115,7 +115,7 @@ export class Metrics implements Telemetry, PolicyListener, PersistenceObserver {
   );
   readonly #dlqMoves = this.#counter(
     'sqs_dlq_moves_total',
-    'SQS messages moved to the DLQ by the application, by reason',
+    'Successful application sends to the DLQ, including deduplicated resends, by reason',
     ['reason'],
   );
   readonly #bulkheadRejections = this.#counter(
