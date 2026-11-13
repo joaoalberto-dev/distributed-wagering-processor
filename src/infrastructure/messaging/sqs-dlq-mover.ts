@@ -49,8 +49,9 @@ export class SqsDlqMover {
 
   async move(move: DlqMove): Promise<void> {
     const { sqs, guard, queues, instanceId } = this.options;
-    const sourceMessageId = move.message.MessageId;
-    if (!sourceMessageId) throw new Error('SQS delivery has no MessageId');
+    // SQS always sets a MessageId. Without one, a random ID still moves the
+    // message; a repeat move after a failed delete is then not deduplicated.
+    const sourceMessageId = move.message.MessageId ?? crypto.randomUUID();
     const deadLetterQueueUrl = await queues.url('deadLetter');
     await guard(() =>
       sqs.send(
