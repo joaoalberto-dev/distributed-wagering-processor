@@ -339,7 +339,14 @@ async function main() {
   await mkdir(folder, { recursive: true });
   console.log(`Load run ${runId} • ${folder}`);
 
-  const base = loadConfig(process.env);
+  const base = loadConfig({
+    DATABASE_URL: process.env.DATABASE_URL,
+    DATABASE_OWNER_URL: process.env.DATABASE_OWNER_URL,
+    AWS_ENDPOINT_URL: process.env.AWS_ENDPOINT_URL,
+    AWS_REGION: process.env.AWS_REGION,
+    AWS_ACCESS_KEY_ID: process.env.AWS_ACCESS_KEY_ID,
+    AWS_SECRET_ACCESS_KEY: process.env.AWS_SECRET_ACCESS_KEY,
+  });
   const owner = new URL(base.database.ownerUrl);
   const app = new URL(base.database.url);
   const endpoint = new URL(base.aws.endpointUrl);
@@ -391,19 +398,22 @@ async function main() {
     const provisioned = await setup({ env, database });
     sql = new SQL(provisioned.ownerUrl);
     for (const [index, target] of targets.entries()) {
-      const child = Bun.spawn(['bun', 'dist/bootstrap/main.js'], {
-        env: {
-          PATH: process.env.PATH,
-          HOME: process.env.HOME,
-          ...env,
-          DATABASE_URL: provisioned.databaseUrl,
-          DATABASE_OWNER_URL: provisioned.ownerUrl,
-          PORT: new URL(target).port,
-          INSTANCE_ID: `${runId}-${index}`,
+      const child = Bun.spawn(
+        ['bun', '--no-env-file', 'dist/bootstrap/main.js'],
+        {
+          env: {
+            PATH: process.env.PATH,
+            HOME: process.env.HOME,
+            ...env,
+            DATABASE_URL: provisioned.databaseUrl,
+            DATABASE_OWNER_URL: provisioned.ownerUrl,
+            PORT: new URL(target).port,
+            INSTANCE_ID: `${runId}-${index}`,
+          },
+          stdout: Bun.file(join(folder, `app-${index}.log`)),
+          stderr: 'inherit',
         },
-        stdout: Bun.file(join(folder, `app-${index}.log`)),
-        stderr: 'inherit',
-      });
+      );
       apps.push(child);
       await awaitReady(child, target);
     }
@@ -488,7 +498,36 @@ async function main() {
         signal: interrupted.signal,
       },
     );
-    const exit = await traffic.exited;
+    const duration = stages.reduce((sum, stage) => sum + stage.seconds, 0);
+    const active = new AbortController();
+    const snapshots =
+      settings.profile === 'smoke'
+        ? Promise.resolve()
+        : (async () => {
+            // Probe gauges during traffic as they can return to zero before the final scrape.
+            const interval =
+              Math.min(10, Math.max(1, Math.floor(duration / 4))) * 1000;
+            for (let index = 1; !active.signal.aborted; index += 1) {
+              const signal = AbortSignal.any([
+                AbortSignal.timeout(interval),
+                active.signal,
+              ]);
+              await new Promise<void>((resolve) =>
+                signal.addEventListener('abort', () => resolve(), {
+                  once: true,
+                }),
+              );
+              if (!active.signal.aborted)
+                await capture(targets, folder, `active-${index}`, sql, pids);
+            }
+          })().catch(async (error: unknown) => {
+            await Bun.write(
+              join(folder, 'active-metrics-error.txt'),
+              String(error),
+            );
+          });
+    const exit = await traffic.exited.finally(() => active.abort());
+    await snapshots;
     await capture(targets, folder, 'traffic-ended', sql, pids);
     const summary = (await Bun.file(summaryPath).json()) as Summary;
     const metric = (name: string) => summary.metrics[name]?.values;
