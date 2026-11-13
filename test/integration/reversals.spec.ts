@@ -137,11 +137,14 @@ describe('one successful reversal per transaction', () => {
     const bet = wagerBody(wallet);
     await send(bet, 200);
     await send(reversal(wallet, 'REFUND', bet), 200);
+    const before = await reversedSettlements();
 
     const second = await send(reversal(wallet, 'REFUND', bet), 422);
 
     expect(second.failureCode).toBe('REFERENCE_ALREADY_REVERSED');
     expect(await balanceOf(wallet.id)).toBe('100.00');
+    // A rejected reversal settled nothing, so it is not counted.
+    expect(await reversedSettlements()).toBe(before);
   });
 });
 

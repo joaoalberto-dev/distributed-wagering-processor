@@ -440,6 +440,34 @@ describe('SubmitWagerTransaction', () => {
       ]);
       expect(telemetry.of('settlementOnReversedReference')).toEqual([[]]);
     });
+
+    it('does not count a rejected second reversal as a settlement', async () => {
+      await submit.execute(
+        command(operation({ externalTransactionId: 'ext-rr' })),
+      );
+      const refund = await submit.execute(
+        command(
+          operation({
+            kind: 'REFUND',
+            referenceExternalTransactionId: 'ext-rr',
+          }),
+        ),
+      );
+      const rollback = await submit.execute(
+        command(
+          operation({
+            kind: 'ROLLBACK',
+            referenceExternalTransactionId: 'ext-rr',
+          }),
+        ),
+      );
+      expect(rollback.transaction.status).toBe('REJECTED');
+      expect(rollback.transaction.details).toEqual({
+        referenceReversedBy: refund.transaction.id,
+      });
+      expect(logger.warnings).toEqual([]);
+      expect(telemetry.of('settlementOnReversedReference')).toEqual([]);
+    });
   });
 
   describe('races', () => {

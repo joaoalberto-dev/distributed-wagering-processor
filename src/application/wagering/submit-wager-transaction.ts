@@ -2,6 +2,7 @@ import { InboxMessage } from '../../domain/messaging/inbox-message.js';
 import { Money, type MoneyProps } from '../../domain/money/money.js';
 import { settle } from '../../domain/settlement/settle.js';
 import type { SubmittableKind } from '../../domain/transaction/transaction-kind.js';
+import { WagerTransactionStatus } from '../../domain/transaction/transaction-status.js';
 import { WagerTransaction } from '../../domain/transaction/wager-transaction.js';
 import {
   ExternalTransactionIdConflict,
@@ -402,8 +403,13 @@ export class SubmitWagerTransaction {
     );
   }
 
-  /** D9: a settlement against a reversed `BET` is processed, and flagged. */
+  /**
+   * D9: a settlement against a reversed `BET` is processed, and flagged. A
+   * rejected second reversal also names the reversal in its details, but it
+   * settled nothing, so it is not counted.
+   */
   private warnIfReversed(transaction: WagerTransaction): void {
+    if (transaction.status !== WagerTransactionStatus.Processed) return;
     const reversedBy = transaction.resultDetails?.referenceReversedBy;
     if (reversedBy === undefined) return;
     this.telemetry.settlementOnReversedReference();
