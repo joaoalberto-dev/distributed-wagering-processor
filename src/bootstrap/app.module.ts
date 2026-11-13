@@ -12,14 +12,11 @@ import { ObservabilityModule } from './observability.module.js';
 import { PersistenceModule } from './persistence.module.js';
 import { WorkersModule } from './workers.module.js';
 
-export const APP_CONFIG = Symbol('APP_CONFIG');
-
 @Module({})
 export class AppModule implements NestModule {
   static register(app: Application): DynamicModule {
     return {
       module: AppModule,
-      global: true,
       imports: [
         PersistenceModule.register(app),
         ObservabilityModule.register(app),
@@ -27,8 +24,6 @@ export class AppModule implements NestModule {
         WorkersModule.register(),
         MessagingModule.register(),
       ],
-      providers: [{ provide: APP_CONFIG, useValue: app.config }],
-      exports: [APP_CONFIG],
     };
   }
 

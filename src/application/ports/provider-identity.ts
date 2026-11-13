@@ -6,5 +6,3 @@
 export interface ProviderIdentityPort {
   authorize(providerId: string, channel: 'http' | 'sqs'): Promise<void>;
 }
-
-export const PROVIDER_IDENTITY = Symbol('ProviderIdentity');

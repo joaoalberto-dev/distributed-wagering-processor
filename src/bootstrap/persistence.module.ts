@@ -5,7 +5,6 @@ import {
   type OnApplicationShutdown,
 } from '@nestjs/common';
 import { QUERY_PORT } from '../application/ports/queries.js';
-import { UNIT_OF_WORK } from '../application/ports/unit-of-work.js';
 import type { Application } from './container.js';
 
 export const APPLICATION = Symbol('Application');
@@ -25,10 +24,9 @@ export class PersistenceModule implements OnApplicationShutdown {
       global: true,
       providers: [
         { provide: APPLICATION, useValue: app },
-        { provide: UNIT_OF_WORK, useValue: app.unitOfWork },
         { provide: QUERY_PORT, useValue: app.queries },
       ],
-      exports: [APPLICATION, UNIT_OF_WORK, QUERY_PORT],
+      exports: [APPLICATION, QUERY_PORT],
     };
   }
 
