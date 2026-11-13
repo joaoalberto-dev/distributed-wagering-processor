@@ -83,7 +83,7 @@ The application connects as `wagering_app`, which has only `SELECT`, `INSERT`, a
 *   **Identities.** `UNIQUE (provider_id, idempotency_key)` and `UNIQUE (provider_id, external_transaction_id)`.
 *   **Same-wallet references.** Composite foreign keys `(reference_transaction_id, wallet_id)` and ledger `(transaction_id, wallet_id)` put "same wallet" in the schema.
 *   **One successful reversal.** A partial unique index on `reference_transaction_id` where the status is `PROCESSED` and the kind is `REFUND` or `ROLLBACK`.
-*   **Immutability.** Triggers block `UPDATE`, `DELETE`, and `TRUNCATE` on the ledger; changes to identity columns; and any change to a terminal transaction. A trigger allows only the persisted lifecycle edges.
+*   **Immutability.** Triggers block `UPDATE`, `DELETE`, and `TRUNCATE` on the ledger; any `UPDATE` of an inbox row, so a delivery stays bound to its transaction and payload hash (migration `0008`); changes to identity columns; and any change to a terminal transaction. A trigger allows only the persisted lifecycle edges.
 *   **Ledger arithmetic.** `balance_after = balance_before ± amount` by direction, per row.
 *   **Named violations.** Every trigger raises SQLSTATE `23000` and reports its own name as the constraint, so a refused write names its rule the way a `CHECK` does. Row triggers run before `CHECK` constraints, so the lifecycle trigger refuses a `PENDING` insert first; the status checks stay as a second barrier for writes that bypass triggers.
 *   **Commit-time consistency.** Deferred constraint triggers check at `COMMIT`:
@@ -242,6 +242,7 @@ A round may have several `WIN`s, and a processed `REFUND` may itself be rolled b
     *   The publisher loop starts when `OUTBOX_PUBLISHER_ENABLED`. It runs the next cycle at once after a full batch, and otherwise waits 500 ms. It skips cycles while the `postgres` or the `sqs` circuit is open.
     *   The send is one attempt (`maxAttempts: 1`, on an SQS client of its own), aborted after 5 s, through the `sqs` circuit. If the whole call throws, the transaction rolls back and no attempt is counted.
     *   An entry that SQS refuses, or leaves out of its answer, is rescheduled with its reason in `last_error`. A sender fault (a malformed entry) also logs an error with the event's IDs and increments `outbox_sender_faults_total`.
+*   **Ordering.** Events are not guaranteed to reach the queue in commit order, even for one wallet. Concurrent publishers claim disjoint batches that can hold events of the same wallet and send them in parallel, and an event that is rescheduled after a failed send goes out after later ones. The FIFO group keeps only the order in which events were sent. Consumers de-duplicate by `eventId` and order balance events by `walletVersion`.
 *   **Crash safety.** A crash during the send releases the row locks at once, and another instance republishes the same `eventId`. A commit that fails after a successful send also leads to a republish. Both duplicates are safe: consumers de-duplicate by `eventId`, and the FIFO deduplication window absorbs most of them.
 *   **No dead-letter state.** An event records an outcome that is already committed, so it is retried forever (backoff capped at 5 minutes). `outbox_lag_seconds` and `outbox_sender_faults_total` expose a stuck event.
 *   **Destination.** `wagering-events.fifo`, `MessageGroupId = wallet_id`, `MessageDeduplicationId = eventId`.
@@ -402,13 +403,13 @@ Unit specs are under `src/` next to their source; the others are `test/integrati
 
 Direct queue assertions pair each transaction's expected event types with durable outbox IDs and received bodies in `duplicate-bet`, `balance-contention`, `historical-replay`, `crash-after-commit`, `out-of-order`, and `restart-recovery`. They cover rejection, entry into pending, and processed LOSS without a balance event. Replay and inbox redelivery preserve outbox IDs. The restart spec permits a pending event for references that raced their dependencies; the out-of-order spec requires it because it observes each pending status before submitting the corresponding BET. The other financial scenarios use the dedicated publisher suite for event guarantees. The publisher crash spec simulates republishing outside the five-minute FIFO window by resending under new transport deduplication IDs.
 
-The post-audit run on 2026-11-12 used commit `bdaeda9a47ba84e299e3570341fa0a3091ba3809`, Linux on an AMD Ryzen 7 5700X3D (8 cores, 16 threads, 60 GiB RAM), Bun 1.4.4, and isolated PostgreSQL 17.11 and MiniStack 1.5.39 containers on loopback. The suites ran in sequence.
+The latest run, on 2026-11-13, used the commit that adds migration `0008` (decision 43), Linux on an AMD Ryzen 7 5700X3D (8 cores, 16 threads, 60 GiB RAM), Bun 1.4.4, and isolated PostgreSQL 17.11 and MiniStack 1.5.39 containers on loopback. The suites ran in sequence.
 
 | Command | Result | Test time |
 |---|---|---:|
-| `bun run check` | Type check, lint, format check and 459 unit tests passed | 0.43 s for tests |
-| `bun run test:integration` | Build and 234 tests passed | 76.61 s for tests |
-| `bun run test:concurrency` | Build and 12 tests passed | 110.78 s for tests |
+| `bun run check` | Type check, lint, format check and 462 unit tests passed | 0.47 s for tests |
+| `bun run test:integration` | Build and 235 tests passed | 71.98 s for tests |
+| `bun run test:concurrency` | Build and 12 tests passed | 113.97 s for tests |
 
 The migration and DLQ tests execute both audit reproductions against the local services. Source review supplies the argument that a stable SQS ID survives redelivery and that the migration's table lock keeps concurrent writes from invalidating its preflight check. Real AWS behavior remains unverified. Double-entry bookkeeping, OpenTelemetry and dashboards are outside the challenge scope. Load measurements are an optional extension.
 
@@ -463,7 +464,7 @@ The saturation profile exposed generator exhaustion as well as longer HTTP waits
     | outbox lag | `outbox_lag_seconds`, `outbox_pending`, `outbox_sender_faults_total` |
     | latency | `wager_processing_duration_seconds` |
 
-    Also: `pending_references`, `reference_failed_total`, `reconciliation_divergences_total`, `settlement_on_reversed_reference_total` (a `WIN` or `LOSS` processed against a reversed `BET`, counted with its warning log), `bulkhead_rejections_total`, `circuit_state`, and the pool gauges `db_pool_in_use` and `db_pool_waiting`.
+    Also: `pending_references`, `reference_failed_total`, `reconciliation_divergences_total`, `settlement_on_reversed_reference_total` (a `WIN` or `LOSS` processed against a reversed `BET`, counted with its warning log; a rejected second reversal is not counted), `bulkhead_rejections_total`, `circuit_state`, and the pool gauges `db_pool_in_use` and `db_pool_waiting`.
 
     *   **Lock conflicts.** `wallet_lock_wait_seconds{channel}` times each waiting wallet lock; a lock that times out is counted by `wallet_lock_timeouts_total` (`55P03`) instead. `statement_timeouts_total` counts `57014`. Both come from the unit of work and the query port, through a `PersistenceObserver` the metrics implement.
     *   **Gauges at scrape.** `outbox_pending`, `outbox_lag_seconds` (age of the oldest unpublished event), `pending_references`, and `sqs_dlq_depth` are read when `/metrics` is scraped, each read with a 1 s timeout and outside the circuits. Only instances that run the publisher or the worker expose them, so scraping every instance does not multiply the load; dashboards take the `max`. A read that fails reports `NaN`, which `max` skips, rather than a stale or a zero value; the scrape itself still answers. The pool gauges are read last, so the scrape's own reads are not counted.
@@ -572,7 +573,7 @@ DLQ-only reasons: `UNEXPECTED_ERROR` (3rd receive) and `RETRY_BUDGET_EXHAUSTED` 
 *   Partial reversals: a reversal must match the referenced amount.
 *   Round state: whether a round is open, settled, or cancelled belongs to the provider.
 *   Per-currency rules: every currency has two decimals and the same ceiling.
-*   Event ordering beyond what FIFO groups give per wallet; `walletVersion` lets consumers order balance events.
+*   Event ordering: events of one wallet can reach the queue out of commit order (see §5, Transactional outbox); `walletVersion` lets consumers order balance events.
 *   Retention of inbox and outbox rows.
 *   Implemented authentication (designed in §6).
 *   Future extensions, documented but not built: SNS fan-out, a provider registry, ledger balance checkpoints, OpenTelemetry tracing, dashboards.
@@ -625,6 +626,7 @@ In chronological order. A revised decision is not deleted: it is marked **Supers
 | 40 | Documentation and the delivery demonstration (task 13), listed below this table. | Decided; "redrive without a script" **Superseded** by 41 |
 | 41 | Stretch items (task 14), listed below this table. | Decided; refines the step 3 example of 40 |
 | 42 | The reference worker claims its row before the wallet, found by CI job 2; listed below this table. | Decided; adds an exception to the lock-order invariant of 9 |
+| 43 | Fixes from an independent pre-delivery audit, listed below this table. | Decided |
 
 Decision 29 settled these points:
 
@@ -761,3 +763,9 @@ Decision 42 settled these points:
 *   **The fix.** Before the TTL, an attempt claims its row with `FOR UPDATE SKIP LOCKED` before the wallet, also with `SKIP LOCKED`; a worker that cannot claim the row skips it without touching it. At the TTL the order stays wallet first, then the row with a waiting `FOR UPDATE`. The lock-order invariant gains an exception for the non-waiting order, since a worker that holds the row never waits.
 *   **The regression test.** `worker-race` forces the interleaving against PostgreSQL instead of relying on timing: two in-process applications, and the second worker's whole cycle runs while the first holds the wallet lock. It failed on every run before the fix. The in-memory fake cannot show the defect, because each fake unit of work works on its own copy and never sees another's commit; the unit spec covers the claim decision only.
 *   **The rule it leaves.** When an attempt decides under a lock and then writes with a "still due" condition, a competing path must not be able to change that condition without the same lock.
+
+Decision 43 settled these points:
+
+*   **Reversed-settlement counter.** `SubmitWagerTransaction` counted and logged every result that named a reversal in `details.referenceReversedBy`, so a `REFERENCE_ALREADY_REVERSED` rejection raised `settlement_on_reversed_reference_total` and its warning. It now counts only a `PROCESSED` result, as the worker already did. A unit test and the `reversals` integration spec check that a rejected reversal leaves the counter unchanged.
+*   **Inbox immutability.** The application only inserts inbox rows, but `wagering_app` could update them, and an updated `transaction_id` would make a redelivery replay another operation. Migration `0008` adds `inbox_no_update_trg`. Deletes stay refused by the grants alone, so a future retention job remains possible for the owner.
+*   **Event ordering.** §5 and the non-goals now say that per-wallet event order is not guaranteed. The design did not change.
