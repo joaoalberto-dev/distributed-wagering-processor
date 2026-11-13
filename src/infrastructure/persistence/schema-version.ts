@@ -4,4 +4,4 @@
  * `migrations/index.ts` re-exports it, and the migrations spec checks that
  * it names the last migration in the list.
  */
-export const LATEST_MIGRATION = 'Migration0007RejectionSnapshotCurrency';
+export const LATEST_MIGRATION = 'Migration0008InboxImmutable';

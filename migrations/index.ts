@@ -6,6 +6,7 @@ import { Migration0004InboxOutbox } from './0004-inbox-outbox.js';
 import { Migration0005CommitConsistency } from './0005-commit-consistency.js';
 import { Migration0006WorkerIndexes } from './0006-worker-indexes.js';
 import { Migration0007RejectionSnapshotCurrency } from './0007-rejection-snapshot-currency.js';
+import { Migration0008InboxImmutable } from './0008-inbox-immutable.js';
 
 /**
  * Every migration, in the order it runs. Each entry names its class
@@ -31,6 +32,7 @@ export const migrations: MigrationObject[] = [
     name: 'Migration0007RejectionSnapshotCurrency',
     class: Migration0007RejectionSnapshotCurrency,
   },
+  { name: 'Migration0008InboxImmutable', class: Migration0008InboxImmutable },
 ];
 
 /** The name of the last migration; readiness compares the database against it. */

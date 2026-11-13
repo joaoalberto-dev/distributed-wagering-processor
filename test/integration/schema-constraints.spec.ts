@@ -549,6 +549,20 @@ describe('inbox', () => {
     });
   });
 
+  it('refuses an update of a committed row, even for the owner', async () => {
+    const { opening } = await openWallet(database.owner);
+    const row = inboxRow(opening.id);
+    await database.owner.begin((tx) => insertRow(tx, 'inbox', row));
+    for (const sql of [database.app, database.owner]) {
+      const violation = await violationOf(
+        sql,
+        (tx) =>
+          tx`UPDATE inbox SET payload_hash = 'v1:other' WHERE message_id = ${row.message_id}`,
+      );
+      expect(violation.constraint).toBe('inbox_no_update_trg');
+    }
+  });
+
   it('checks inbox_transaction_id_fkey at commit, so the row may precede its transaction', async () => {
     const violation = await commitViolationOf(database.app, (tx) =>
       insertRow(tx, 'inbox', inboxRow(newId())),

@@ -3,6 +3,7 @@
  * context in headers and logs, health, and metrics.
  */
 import { afterAll, beforeAll, describe, expect, it } from 'bun:test';
+import { LATEST_MIGRATION } from '../../migrations/index.js';
 import { useDatabase } from '../support/database.js';
 import { brl, openWalletBody } from '../support/factories.js';
 import { HttpClient } from '../support/http-client.js';
@@ -120,7 +121,7 @@ describe('health', () => {
       sqs: { status: 'up' },
       migrations: {
         status: 'up',
-        latest: 'Migration0007RejectionSnapshotCurrency',
+        latest: LATEST_MIGRATION,
       },
     });
   });

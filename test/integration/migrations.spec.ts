@@ -60,10 +60,14 @@ async function routines(): Promise<string[]> {
   return rows.map((row) => row.routine_name);
 }
 
+const MIGRATION_0007 = 'Migration0007RejectionSnapshotCurrency';
+
 describe('migrations', () => {
   const names = migrations.map((migration) => migration.name);
+  /** The migrations applied after 0007, which its downgrade test reverts first. */
+  const AFTER_0007 = names.slice(names.indexOf(MIGRATION_0007) + 1);
 
-  it('lists the seven migrations in order, the last one being LATEST_MIGRATION', () => {
+  it('lists the eight migrations in order, the last one being LATEST_MIGRATION', () => {
     expect(names).toEqual([
       'Migration0001Wallets',
       'Migration0002WagerTransactions',
@@ -72,6 +76,7 @@ describe('migrations', () => {
       'Migration0005CommitConsistency',
       'Migration0006WorkerIndexes',
       'Migration0007RejectionSnapshotCurrency',
+      'Migration0008InboxImmutable',
     ]);
     expect(names.at(-1)).toBe(LATEST_MIGRATION);
   });
@@ -98,6 +103,8 @@ describe('migrations', () => {
   });
 
   it('downgrades with compatible data and preserves incompatible rejection history on refusal', async () => {
+    // Migration 0007 is reverted only after every later migration.
+    expect(await migrate('down', scratchUrl)).toEqual(AFTER_0007.toReversed());
     const wallet = walletRow();
     await insertRow(scratch, 'wallets', wallet);
     const rejection = {
@@ -114,9 +121,13 @@ describe('migrations', () => {
       SELECT id, status, failure_code, currency, result_balance_amount::text,
         result_balance_currency, processed_at FROM wager_transactions ORDER BY id`;
     const compatibleHistory = await snapshot();
-    expect(await migrate('down', scratchUrl)).toEqual([LATEST_MIGRATION]);
+    expect(await migrate('down', scratchUrl)).toEqual([MIGRATION_0007]);
     expect(await snapshot()).toEqual(compatibleHistory);
-    expect(await migrate('up', scratchUrl)).toEqual([LATEST_MIGRATION]);
+    expect(await migrate('up', scratchUrl)).toEqual([
+      MIGRATION_0007,
+      ...AFTER_0007,
+    ]);
+    expect(await migrate('down', scratchUrl)).toEqual(AFTER_0007.toReversed());
 
     const mismatch = transactionRow(wallet, {
       ...rejection,
@@ -134,7 +145,7 @@ describe('migrations', () => {
     );
     expect(await snapshot()).toEqual(history);
     expect(await schema()).toEqual(definition);
-    expect(await migrate('up', scratchUrl)).toEqual([]);
+    expect(await migrate('up', scratchUrl)).toEqual(AFTER_0007);
     expect(
       String(
         await rejectionOf(scratch`
