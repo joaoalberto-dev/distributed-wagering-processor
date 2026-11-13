@@ -110,7 +110,7 @@ describe('migrations', () => {
       failure_code: 'INSUFFICIENT_FUNDS',
     });
     await insertRow(scratch, 'wager_transactions', compatible);
-    const snapshot = () => scratch`
+    const snapshot = async (): Promise<unknown> => scratch`
       SELECT id, status, failure_code, currency, result_balance_amount::text,
         result_balance_currency, processed_at FROM wager_transactions ORDER BY id`;
     const compatibleHistory = await snapshot();
@@ -125,7 +125,7 @@ describe('migrations', () => {
     });
     await insertRow(scratch, 'wager_transactions', mismatch);
     const history = await snapshot();
-    const schema = () => scratch`
+    const schema = async (): Promise<unknown> => scratch`
       SELECT pg_get_constraintdef(oid) AS definition FROM pg_constraint
       WHERE conname = 'wager_transactions_result_check'`;
     const definition = await schema();

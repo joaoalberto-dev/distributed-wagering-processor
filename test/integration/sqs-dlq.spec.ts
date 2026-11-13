@@ -14,6 +14,7 @@ import { useDatabase } from '../support/database.js';
 import { brl, keyOf, wagerBody } from '../support/factories.js';
 import { HttpClient } from '../support/http-client.js';
 import { useInfrastructure } from '../support/infrastructure.js';
+import { rejectionOf } from '../support/rejection-of.js';
 import { expectReconciled } from '../support/reconcile.js';
 import { type SpawnedApp, spawnApp } from '../support/spawn-app.js';
 import { envelopeOf, TestQueues } from '../support/sqs.js';
@@ -110,10 +111,14 @@ describe('permanent errors', () => {
       });
     }
     await queues.drained();
-    const [row] = await database.app`
+    const [row] = (await database.app`
       SELECT balance::text, version, (SELECT count(*)::int
         FROM wallet_ledger_entries WHERE wallet_id = wallets.id) AS entries
-      FROM wallets WHERE id = ${wallet.id}`;
+      FROM wallets WHERE id = ${wallet.id}`) as {
+      balance: string;
+      version: number;
+      entries: number;
+    }[];
     expect(row).toEqual({ balance: '99.00', version: 2, entries: 2 });
     await expectReconciled(http, [wallet.id]);
   });
@@ -159,9 +164,11 @@ describe('permanent errors', () => {
       reason: 'VALIDATION_FAILED',
       errorClass: 'permanent',
     } as const;
-    await expect(
-      mover.move({ ...move, message: original, receiveCount: 1 }),
-    ).rejects.toThrow('injected delete failure');
+    expect(
+      await rejectionOf(
+        mover.move({ ...move, message: original, receiveCount: 1 }),
+      ),
+    ).toEqual(new Error('injected delete failure'));
     await sqs.send(
       new ChangeMessageVisibilityCommand({
         QueueUrl: queueUrls.input,

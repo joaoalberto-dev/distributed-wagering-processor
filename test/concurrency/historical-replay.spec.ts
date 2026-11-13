@@ -96,12 +96,12 @@ it('replays historical results and serializes concurrent refunds across three pr
     // Walk indirect blockers as a row-lock waiter can queue behind another waiter.
     await waitFor(
       async () => {
-        const [row] = await database.owner`
+        const [row] = (await database.owner`
         WITH RECURSIVE waiters(pid) AS (
           SELECT ${backend.pid}::int UNION
           SELECT a.pid FROM pg_stat_activity a JOIN waiters w ON w.pid = ANY(pg_blocking_pids(a.pid))
           WHERE a.datname = current_database()
-        ) SELECT count(*)::int AS count FROM waiters`;
+        ) SELECT count(*)::int AS count FROM waiters`) as { count: number }[];
         return row?.count === 3;
       },
       {

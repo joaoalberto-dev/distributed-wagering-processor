@@ -90,10 +90,15 @@ describe('a consumer killed after commit, before the delete', () => {
       'CREDIT',
       'DEBIT',
     ]);
-    const [inbox] = await database.owner`
+    const inboxRows = (await database.owner`
       SELECT inbox.transaction_id, wager_transactions.status
       FROM inbox JOIN wager_transactions ON wager_transactions.id = inbox.transaction_id
-      WHERE message_id = ${envelope.messageId}`;
+      WHERE message_id = ${envelope.messageId}`) as {
+      transaction_id: string;
+      status: string;
+    }[];
+    expect(inboxRows).toHaveLength(1);
+    const [inbox] = inboxRows;
     expect(inbox?.status).toBe('PROCESSED');
     if (typeof inbox?.transaction_id !== 'string')
       throw new Error('Missing inbox transaction');
