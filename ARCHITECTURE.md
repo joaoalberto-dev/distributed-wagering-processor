@@ -154,7 +154,7 @@ A round may have several `WIN`s, and a processed `REFUND` may itself be rolled b
 *   **Contention is bounded.** `lock_timeout` 2 s, `statement_timeout` 5 s, `transaction_timeout` 10 s. On HTTP a contention error is retried up to twice in process with jitter, then answered with `503` and `Retry-After`. Duplicate requests that arrive together wait for the lock and then receive the stored result's replay.
 *   **Hot wallet.**
     *   Writes to one wallet are serialized. That is the correctness mechanism, and it caps one wallet's throughput.
-    *   Each instance has 20 connections, split into fixed shares: HTTP 11 (a bulkhead with a bounded queue of 50 and a 2 s wait); consumer 4; worker 1; publisher 1; reconciliation 2; readiness and gauges 1.
+    *   Each instance has 21 connections, split into fixed shares: HTTP 11 (a bulkhead with a bounded queue of 50 and a 2 s wait); consumer 4; worker 1; publisher 1; reconciliation 2; readiness 1; `/metrics` gauges 1. Readiness has its own share so a probe never waits behind a scrape.
     *   A burst on one wallet can take the whole HTTP share of an instance, but never the connections of the other roles.
     *   Contention never opens a circuit breaker.
 *   **Multiple instances.**
@@ -306,7 +306,7 @@ The envelope is an abstract `IntegrationEvent<T>` with one subclass per event, c
     *   Terminal rows never change.
 *   **Ports.** `UnitOfWork`; the repositories for wallets, transactions, ledger, inbox, and outbox; `ReconciliationReader`; `QueryPort`; `EventPublisher`; `ProviderIdentityPort`; `Clock`; `IdGenerator`; `Telemetry`; `RequestContext`; `AppLogger`.
 *   **Composition.** `buildApplication(config)` in `src/bootstrap/container.ts` builds every adapter, policy, and use case without Nest; the Nest modules only expose what it returns, and in-process tests build the same graph. The container owns the one MikroORM instance and its pool; `PersistenceModule` closes it on shutdown.
-*   **Resilience wiring.** The `postgres` circuit wraps each unit-of-work attempt and each read of `QueryPort`; an open circuit fails fast as an Outage (`503`). The HTTP contention retry wraps the whole attempt from outside, so it never retries a call the circuit refused. Bulkheads are applied by a global interceptor in `src/bootstrap`, keyed by handler: reconciliation, readiness and `/metrics`, and every other business route; liveness has none.
+*   **Resilience wiring.** The `postgres` circuit wraps each unit-of-work attempt and each read of `QueryPort`; an open circuit fails fast as an Outage (`503`). The HTTP contention retry wraps the whole attempt from outside, so it never retries a call the circuit refused. Bulkheads are applied by a global interceptor in `src/bootstrap`, keyed by the `ROUTE_GROUP` metadata each route declares with `@SetMetadata`: reconciliation, readiness, `/metrics`, and `http` for every route that declares none; liveness declares `none`.
 *   **MikroORM usage.**
     *   Persistence records (`defineEntity`, no decorators) are separate from the domain classes, with explicit mappers, because ORM hydration would bypass `rehydrate`.
     *   Each operation uses the entity manager of its own `em.transactional()` call, with one ordered `flush` at commit (`FlushMode.COMMIT`, so a query never flushes early); the global context is disabled. State is loaded after the lock, with `refresh`.
@@ -556,7 +556,7 @@ DLQ-only reasons: `UNEXPECTED_ERROR` (3rd receive) and `RETRY_BUDGET_EXHAUSTED` 
 | Reconciliation and `/metrics` are open | Repeated reconciliations load the database | The reconciliation bulkhead (2 connections per instance). |
 | Anyone can create pending reversals for references that never arrive | Each costs about 290 attempts over 24 h | One worker connection per instance; busy wallets are skipped; `pending_references` exposes growth. |
 | One wallet's writes are serialized | A burst gets `503` after `lock_timeout` and can fill one instance's HTTP share | Accepted: serialization is the correctness mechanism; other roles keep their connections. |
-| Instance count | 20 connections per instance and `max_connections = 200` allow about 9 instances | A connection pooler is the next step. |
+| Instance count | 21 connections per instance and `max_connections = 200` allow about 9 instances | A connection pooler is the next step. |
 | The provider chooses the FIFO group | A coarse group serializes many wallets; a message under contention blocks its group for about 5 minutes | `walletId` is the recommended group. |
 | Messages behind a failing message share its receives | A valid message can reach the DLQ as `RETRY_BUDGET_EXHAUSTED` | Released only on a backoff; that reason is safe to redrive. |
 | Unknown commit outcome when the connection drops during `COMMIT` | The provider cannot tell whether the operation applied | `503`; resending with the same key is safe. |
@@ -639,7 +639,7 @@ Decision 29 settled these points:
     *   `@nestjs/resilience` for the retry, the bulkheads, and the circuits; circuits count only outages.
     *   `@nestjs/schedule` rejected (no pause, backoff, or drain).
 *   **Platform.**
-    *   A pool of 20 connections with fixed shares.
+    *   A pool of 21 connections with fixed shares.
     *   Express kept, because there is no throughput target.
     *   `src/contracts` for the inbound schemas.
 *   **Tests.** A separate test database, a TCP proxy for outages, and per-spec queues.

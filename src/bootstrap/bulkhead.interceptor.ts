@@ -3,35 +3,28 @@ import type {
   ExecutionContext,
   NestInterceptor,
 } from '@nestjs/common';
+import type { Reflector } from '@nestjs/core';
 import { from, lastValueFrom, type Observable } from 'rxjs';
-import { HealthController } from '../infrastructure/observability/health.controller.js';
-import { MetricsController } from '../infrastructure/observability/metrics.controller.js';
-import type {
-  BulkheadGroup,
-  Policies,
-} from '../infrastructure/resilience/policies.js';
-import { WalletsController } from '../interface/http/wallets.controller.js';
+import {
+  ROUTE_GROUP,
+  type RouteGroup,
+} from '../application/ports/route-group.js';
+import type { Policies } from '../infrastructure/resilience/policies.js';
 
 /**
- * The route group of a handler (connection budget, §10). Liveness has no
- * group: it touches no dependency and must answer even when every share is
- * full.
+ * The route group of a handler (connection budget, §10): the `ROUTE_GROUP`
+ * metadata of the handler, else of its controller, else `http`.
  */
 export function groupOf(
-  controller: unknown,
-  handler: unknown,
-): BulkheadGroup | null {
-  if (controller === HealthController) {
-    return handler === HealthController.prototype.ready ? 'readiness' : null;
-  }
-  if (controller === MetricsController) return 'readiness';
-  if (
-    controller === WalletsController &&
-    handler === WalletsController.prototype.reconcile
-  ) {
-    return 'reconciliation';
-  }
-  return 'http';
+  reflector: Reflector,
+  context: ExecutionContext,
+): RouteGroup {
+  return (
+    reflector.getAllAndOverride<RouteGroup | undefined>(ROUTE_GROUP, [
+      context.getHandler(),
+      context.getClass(),
+    ]) ?? 'http'
+  );
 }
 
 /**
@@ -40,11 +33,14 @@ export function groupOf(
  * the error filter answers with 503 and `Retry-After: 1`.
  */
 export class BulkheadInterceptor implements NestInterceptor {
-  constructor(private readonly policies: Policies) {}
+  constructor(
+    private readonly policies: Policies,
+    private readonly reflector: Reflector,
+  ) {}
 
   intercept(context: ExecutionContext, next: CallHandler): Observable<unknown> {
-    const group = groupOf(context.getClass(), context.getHandler());
-    if (group === null) return next.handle();
+    const group = groupOf(this.reflector, context);
+    if (group === 'none') return next.handle();
     const bulkhead = this.policies.bulkheads[group];
     return from(bulkhead.execute(() => lastValueFrom(next.handle())));
   }

@@ -1,5 +1,5 @@
 import { type DynamicModule, Module } from '@nestjs/common';
-import { APP_FILTER, APP_INTERCEPTOR, APP_PIPE } from '@nestjs/core';
+import { APP_FILTER, APP_INTERCEPTOR, APP_PIPE, Reflector } from '@nestjs/core';
 import { SubmitWagerTransaction } from '../application/wagering/submit-wager-transaction.js';
 import { WagerQueries } from '../application/wagering/wager-queries.js';
 import { OpenWallet } from '../application/wallets/open-wallet.js';
@@ -29,7 +29,9 @@ export class HttpModule {
         { provide: APP_FILTER, useValue: new ErrorFilter() },
         {
           provide: APP_INTERCEPTOR,
-          useValue: new BulkheadInterceptor(app.policies),
+          useFactory: (reflector: Reflector) =>
+            new BulkheadInterceptor(app.policies, reflector),
+          inject: [Reflector],
         },
         { provide: OpenWallet, useValue: app.openWallet },
         { provide: ReconcileWallet, useValue: app.reconcileWallet },

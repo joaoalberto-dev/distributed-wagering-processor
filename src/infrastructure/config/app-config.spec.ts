@@ -11,7 +11,7 @@ describe('loadConfig', () => {
       url: 'postgres://wagering_app:wagering_app@localhost:5432/wagering',
       ownerUrl:
         'postgres://wagering_owner:wagering_owner@localhost:5432/wagering',
-      poolMax: 20,
+      poolMax: 21,
       lockTimeoutMs: 2000,
     });
     expect(config.aws).toEqual({

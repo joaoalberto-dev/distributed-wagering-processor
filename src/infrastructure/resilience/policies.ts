@@ -8,12 +8,12 @@ import {
   RetryPolicy,
 } from '@nestjs/resilience';
 import { ContentionError, OutageError } from '../../application/errors.js';
+import type { BulkheadGroup } from '../../application/ports/route-group.js';
 import type { AppConfig } from '../config/app-config.js';
 import { classifySqsError } from '../messaging/sqs-error-classifier.js';
 import type { CallGuard } from '../persistence/mikro-orm-unit-of-work.js';
 
-/** The route groups with their own bulkhead (connection budget, §10). */
-export type BulkheadGroup = 'http' | 'reconciliation' | 'readiness';
+export type { BulkheadGroup };
 
 export type Dependency = 'postgres' | 'sqs';
 
@@ -99,10 +99,18 @@ export function createPolicies(config: Pick<AppConfig, 'http'>): Policies {
         maxQueue: 10,
         queueTimeout: '2s',
       }),
+      // Readiness never waits behind a `/metrics` scrape: a probe that queued
+      // for the scrape's gauges could miss an orchestrator's 1 s probe timeout.
       readiness: new BulkheadPolicy({
         name: 'readiness',
         maxConcurrent: 1,
         maxQueue: 5,
+        queueTimeout: '1s',
+      }),
+      metrics: new BulkheadPolicy({
+        name: 'metrics',
+        maxConcurrent: 1,
+        maxQueue: 2,
         queueTimeout: '1s',
       }),
     },
@@ -122,6 +130,7 @@ const GROUPS: ReadonlySet<string> = new Set<BulkheadGroup>([
   'http',
   'reconciliation',
   'readiness',
+  'metrics',
 ]);
 const DEPENDENCIES: ReadonlySet<string> = new Set<Dependency>([
   'postgres',

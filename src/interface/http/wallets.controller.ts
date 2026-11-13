@@ -8,6 +8,7 @@ import {
   Param,
   Post,
   Query,
+  SetMetadata,
 } from '@nestjs/common';
 import { InvalidCursor, WalletNotFound } from '../../application/errors.js';
 import { QUERY_PORT, type QueryPort } from '../../application/ports/queries.js';
@@ -15,6 +16,7 @@ import {
   REQUEST_CONTEXT,
   type RequestContext,
 } from '../../application/ports/request-context.js';
+import { ROUTE_GROUP } from '../../application/ports/route-group.js';
 import { OpenWallet } from '../../application/wallets/open-wallet.js';
 import { ReconcileWallet } from '../../application/wallets/reconcile-wallet.js';
 import {
@@ -27,6 +29,7 @@ import {
 } from '../../contracts/wallet.schemas.js';
 import { Money } from '../../domain/money/money.js';
 import type { ReconciliationReportJSON } from '../../domain/reconciliation/reconciliation-report.js';
+import { correlationIdOf } from './correlation-id.js';
 import {
   type LedgerPageBody,
   presentLedgerPage,
@@ -51,7 +54,7 @@ export class WalletsController {
     const view = await this.openWallet.execute({
       playerId: body.playerId,
       initialBalance: Money.from(body.initialBalance),
-      correlationId: this.correlationId(),
+      correlationId: correlationIdOf(this.context),
     });
     return presentWallet(view);
   }
@@ -90,18 +93,11 @@ export class WalletsController {
   /** 200 even when inconsistent; the report says so (§14). */
   @Post(':walletId/reconciliation')
   @HttpCode(HttpStatus.OK)
+  @SetMetadata(ROUTE_GROUP, 'reconciliation')
   async reconcile(
     @Param('walletId', { schema: walletIdParam }) walletId: string,
   ): Promise<ReconciliationReportJSON> {
     this.context.set({ walletId });
     return presentReconciliation(await this.reconcileWallet.execute(walletId));
-  }
-
-  private correlationId(): string {
-    const { correlationId } = this.context.get();
-    if (correlationId === undefined) {
-      throw new Error('the request context has no correlation ID');
-    }
-    return correlationId;
   }
 }
