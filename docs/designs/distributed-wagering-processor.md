@@ -711,7 +711,7 @@ sequenceDiagram
 
 #### Connection budget
 
-Each instance has a pool of 20 connections, so three instances use 60 of the 200 that PostgreSQL allows. The shares add up to the pool size:
+Each instance has a pool of 21 connections, so three instances use 63 of the 200 that PostgreSQL allows. The shares add up to the pool size:
 
 | Work | Connections | Limited by |
 |---|---|---|
@@ -720,11 +720,12 @@ Each instance has a pool of 20 connections, so three instances use 60 of the 200
 | pending-reference worker | 1 | its design: one item at a time |
 | outbox publisher | 1 | its design: one batch at a time |
 | reconciliation | 2 | a bulkhead with a bounded queue |
-| readiness and `/metrics` gauges | 1 | a bulkhead |
+| readiness | 1 | a bulkhead |
+| `/metrics` gauges | 1 | a bulkhead of its own, so a probe never waits behind a scrape |
 
 *   Bulkheads apply only to work driven from outside the process (HTTP, reconciliation, health and metrics). The internal loops never exceed their share by design.
 *   A queued HTTP request holds no connection. `503` means the HTTP share stayed full for 2 s.
-*   A hot wallet can still take the whole HTTP share of one instance while its requests wait on the row lock (see Risks). The consumer, the worker, the publisher, reconciliation, and readiness keep their own connections.
+*   A hot wallet can still take the whole HTTP share of one instance while its requests wait on the row lock (see Risks). The consumer, the worker, the publisher, reconciliation, readiness, and the gauges keep their own connections.
 *   Inside PostgreSQL, the wallet row lock isolates wallets from each other.
 
 #### Time limits
@@ -1000,7 +1001,7 @@ The platform spike is the first test written: `test/integration/platform.spec.ts
 | Reconciliation and `/metrics` are open | security, load | Reconciliation scans a wallet's ledger with a 30 s statement timeout, so repeated calls load the database | It runs in the reconciliation bulkhead (two connections per instance), so it cannot starve the other roles. `/metrics` is restricted at the network level in the target design. | §10 connection budget |
 | Anyone can create `PENDING_REFERENCE` rows by referencing external IDs that never arrive | load | Each row costs about 290 wallet-locking attempts over 24 h | The worker has one connection per instance, and a busy wallet is skipped, not waited on. `pending_references` exposes growth. A per-provider cap belongs to the authentication work. | §11; `pending_references` |
 | Writes to one wallet are serialized | scalability | One wallet's throughput is bounded by the time of one transaction under its row lock; a burst waits up to `lock_timeout` and then gets `503`. A burst can take the whole HTTP share of an instance, so other wallets' HTTP requests on that instance queue and may get `503` | Accepted: per-wallet serialization is the correctness mechanism. The HTTP bulkhead keeps the burst from taking the other roles' connections, and contention never opens a circuit. | `balance-contention`, hot-wallet concurrency test |
-| Instance count is bounded by `max_connections` | scalability | 20 connections per instance and `max_connections = 200` allow about 9 instances | Accepted at this scale; a connection pooler such as PgBouncer is the documented extension. | tuning table |
+| Instance count is bounded by `max_connections` | scalability | 21 connections per instance and `max_connections = 200` allow about 9 instances | Accepted at this scale; a connection pooler such as PgBouncer is the documented extension. | tuning table |
 | The provider chooses the SQS `MessageGroupId` | scalability | A coarse group (one per provider) serializes every wallet in it; a message under contention backoff blocks its group for about 5 minutes before the DLQ | `walletId` is documented as the recommended group. Group blocking is an accepted cost of FIFO ordering. | §12 |
 | Inbox, outbox, ledger, and transaction tables grow without bound | operational | Storage and index size grow; reconciliation time grows with ledger size | Accepted: retention is a non-goal. Ledger checkpoints are a documented future extension. | Non-Goals |
 | The commit outcome can be unknown when the connection drops during `COMMIT` | failure mode | The provider cannot tell whether the operation applied | `503`, and resending with the same key is safe: the identities turn a repeat into a replay. | §10; `atomicity` test |
@@ -1451,8 +1452,8 @@ This table is authoritative. Values written elsewhere in this document must matc
 | Area | Value |
 |---|---|
 | PostgreSQL | `statement_timeout` 5 s per connection; `lock_timeout` 2 s and `transaction_timeout` 10 s per transaction; reconciliation `statement_timeout` 30 s and `transaction_timeout` 35 s |
-| Connection pool | 20 per instance; acquire timeout 2 s; compose `max_connections = 200` |
-| Shares | HTTP 11 (bulkhead, `maxQueue` 50, queue wait 2 s); consumer 4; worker 1; publisher 1; reconciliation 2 (bulkhead, `maxQueue` 10, queue wait 2 s); readiness and gauges 1 (bulkhead, `maxQueue` 5, queue wait 1 s) |
+| Connection pool | 21 per instance; acquire timeout 2 s; compose `max_connections = 200` |
+| Shares | HTTP 11 (bulkhead, `maxQueue` 50, queue wait 2 s); consumer 4; worker 1; publisher 1; reconciliation 2 (bulkhead, `maxQueue` 10, queue wait 2 s); readiness 1 (bulkhead, `maxQueue` 5, queue wait 1 s); `/metrics` gauges 1 (bulkhead, `maxQueue` 2, queue wait 1 s) |
 | HTTP | contention retry: 3 attempts in total, `full` jitter, base 50 ms; `Retry-After: 1` on every `503` |
 | Circuit breakers | one per dependency; open after 5 consecutive Outage failures; `openDuration` 5 s; `halfOpenMaxCalls` 1 |
 | SQS consumer | visibility 30 s; long poll 20 s; at most 4 groups in progress; backoff `min(base · 2^(receiveCount − 1), cap)` with base 2 s and cap 60 s; budgets 3 (unexpected) and 10 (contention, outage); native redrive at 50; SIGTERM drain 20 s; compose `stop_grace_period` 30 s |
@@ -1670,7 +1671,7 @@ Trigger rules:
 | `db_pool_in_use`, `db_pool_waiting` | gauge | — | `database-gauges.ts` |
 | `settlement_on_reversed_reference_total` | counter | — | Stretch (task 14) |
 
-Database and queue gauges are computed at scrape time over the readiness-and-gauges share, and only on instances that run the publisher or the worker.
+Database and queue gauges are computed at scrape time over the gauges share, and only on instances that run the publisher or the worker.
 
 ### Test harness
 
@@ -1834,7 +1835,7 @@ Done when: these five integration specs and the classifier spec pass.
 | `src/infrastructure/observability/json-logger.ts` | create | `ConsoleLogger` with `json: true`, merging the context fields. |
 | `src/infrastructure/observability/metrics.ts`, `metrics.controller.ts` | create | One `prom-client` registry implementing `Telemetry`, with every metric in the metric table that the code of tasks 05–08 raises; `GET /metrics`. |
 | `src/infrastructure/observability/health.controller.ts`, `indicators.ts` | create | `/health/live`; `/health/ready` with PostgreSQL `SELECT 1` and the `LATEST_MIGRATION` check (SQS is added in task 09). |
-| `src/infrastructure/resilience/policies.ts` | create | Named policies: the HTTP contention retry, the bulkheads (HTTP, reconciliation, readiness), and the `postgres` circuit with `recordIf` = Outage. |
+| `src/infrastructure/resilience/policies.ts` | create | Named policies: the HTTP contention retry, the bulkheads (HTTP, reconciliation, readiness, metrics), and the `postgres` circuit with `recordIf` = Outage. |
 | `src/infrastructure/auth/trust-all-provider-identity.ts` | create | Accepts any well-formed `providerId`; logs one warning at startup. |
 | `src/bootstrap/bulkhead.interceptor.ts` | create | Global interceptor that applies the bulkhead for each route group. |
 | `src/bootstrap/container.ts`, `app.module.ts`, `main.ts` | change | Wire the above; `MikroOrmModule.forRoot(createOrmConfig(...), { registerRequestContext: false })`; the role flags for the controllers. |

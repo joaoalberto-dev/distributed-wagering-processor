@@ -21,6 +21,7 @@ import {
   type WagerOperationBody,
   wagerOperation,
 } from '../../contracts/wager-operation.schema.js';
+import { correlationIdOf } from './correlation-id.js';
 import { RequestHeader } from './request-header.decorator.js';
 import {
   presentResult,
@@ -55,7 +56,7 @@ export class WageringTransactionsController {
       operation: body,
       idempotencyKey,
       channel: 'http',
-      correlationId: this.correlationId(),
+      correlationId: correlationIdOf(this.context),
       causationId: idempotencyKey,
     });
     const view = result.transaction;
@@ -85,13 +86,5 @@ export class WageringTransactionsController {
     return presentTransaction(
       await this.queries.byExternalId(providerId, externalTransactionId),
     );
-  }
-
-  private correlationId(): string {
-    const { correlationId } = this.context.get();
-    if (correlationId === undefined) {
-      throw new Error('the request context has no correlation ID');
-    }
-    return correlationId;
   }
 }

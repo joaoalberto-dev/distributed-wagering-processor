@@ -32,7 +32,7 @@ const envSchema = z
       .default(
         'postgres://wagering_owner:wagering_owner@localhost:5432/wagering',
       ),
-    DATABASE_POOL_MAX: positiveInt.default(20),
+    DATABASE_POOL_MAX: positiveInt.default(21),
     DB_LOCK_TIMEOUT_MS: positiveInt.default(2000),
     AWS_REGION: z.string().min(1).default('us-east-1'),
     AWS_ENDPOINT_URL: z.url().default('http://localhost:4566'),

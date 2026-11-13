@@ -103,11 +103,25 @@ function mapHttpException(exception: HttpException): Mapped {
   ) {
     return { status, body: response };
   }
-  if (status === HttpStatus.BAD_REQUEST) {
-    // The body parser: malformed JSON never reaches a schema.
+  // The Express adapter wraps the body parser's `SyntaxError` and the router's
+  // `URIError` (a bad percent-encoding in the path) as 400s: neither reaches a
+  // schema. Any other 400 keeps its own message.
+  if (exception.cause instanceof SyntaxError) {
     return {
       status,
       body: envelope('VALIDATION_FAILED', 'the request body is not valid JSON'),
+    };
+  }
+  if (exception.cause instanceof URIError) {
+    return {
+      status,
+      body: envelope('VALIDATION_FAILED', 'the request path is not valid'),
+    };
+  }
+  if (status === HttpStatus.BAD_REQUEST) {
+    return {
+      status,
+      body: envelope('VALIDATION_FAILED', exception.message),
     };
   }
   if (status === HttpStatus.NOT_FOUND) {

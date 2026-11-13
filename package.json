@@ -33,7 +33,6 @@
     "@aws-sdk/client-sqs": "3.1167.0",
     "@mikro-orm/core": "7.2.8",
     "@mikro-orm/migrations": "7.2.8",
-    "@mikro-orm/nestjs": "7.1.0",
     "@mikro-orm/postgresql": "7.2.8",
     "@nestjs/common": "^12.0.1",
     "@nestjs/core": "^12.0.1",
@@ -46,6 +45,7 @@
     "zod": "4.6.7"
   },
   "devDependencies": {
+    "@mikro-orm/nestjs": "7.1.0",
     "@nestjs/cli": "^12.0.0",
     "@nestjs/schematics": "^12.0.0",
     "@nestjs/testing": "^12.0.1",

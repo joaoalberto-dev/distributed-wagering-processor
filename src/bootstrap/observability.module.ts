@@ -1,10 +1,7 @@
 import { type DynamicModule, Module } from '@nestjs/common';
 import { HealthIndicatorService, TerminusModule } from '@nestjs/terminus';
-import { CLOCK } from '../application/ports/clock.js';
 import { ID_GENERATOR } from '../application/ports/id-generator.js';
-import { PROVIDER_IDENTITY } from '../application/ports/provider-identity.js';
 import { REQUEST_CONTEXT } from '../application/ports/request-context.js';
-import { TELEMETRY } from '../application/ports/telemetry.js';
 import { DatabaseGauges } from '../infrastructure/observability/database-gauges.js';
 import { HealthController } from '../infrastructure/observability/health.controller.js';
 import { ReadinessIndicators } from '../infrastructure/observability/indicators.js';
@@ -15,7 +12,8 @@ import type { Application } from './container.js';
 
 /**
  * The operational endpoints (`/health/*`, `/metrics`), served by every
- * instance whatever its role flags, and the cross-cutting ports.
+ * instance whatever its role flags, and the request-context ports the
+ * HTTP middleware and controllers inject.
  */
 @Module({})
 export class ObservabilityModule {
@@ -29,11 +27,8 @@ export class ObservabilityModule {
         { provide: Metrics, useValue: app.metrics },
         { provide: DatabaseGauges, useValue: app.gauges },
         ShutdownState,
-        { provide: TELEMETRY, useValue: app.metrics },
         { provide: REQUEST_CONTEXT, useValue: app.requestContext },
         { provide: ID_GENERATOR, useValue: app.ids },
-        { provide: CLOCK, useValue: app.clock },
-        { provide: PROVIDER_IDENTITY, useValue: app.providerIdentity },
         {
           provide: ReadinessIndicators,
           useFactory: (health: HealthIndicatorService) =>
@@ -41,13 +36,7 @@ export class ObservabilityModule {
           inject: [HealthIndicatorService],
         },
       ],
-      exports: [
-        TELEMETRY,
-        REQUEST_CONTEXT,
-        ID_GENERATOR,
-        CLOCK,
-        PROVIDER_IDENTITY,
-      ],
+      exports: [REQUEST_CONTEXT, ID_GENERATOR],
     };
   }
 }

@@ -1,10 +1,12 @@
-import { Controller, Get, Inject, Res } from '@nestjs/common';
+import { Controller, Get, Inject, Res, SetMetadata } from '@nestjs/common';
 import type { Response } from 'express';
+import { ROUTE_GROUP } from '../../application/ports/route-group.js';
 import { DatabaseGauges } from './database-gauges.js';
 import { Metrics } from './metrics.js';
 
 /** Prometheus exposition; no authentication (challenge §9). */
 @Controller('metrics')
+@SetMetadata(ROUTE_GROUP, 'metrics')
 export class MetricsController {
   constructor(
     @Inject(Metrics) private readonly metrics: Metrics,

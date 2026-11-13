@@ -24,5 +24,3 @@ export interface Telemetry {
   settlementOnReversedReference(): void;
   outboxPublishAttempt(result: 'ok' | 'retry' | 'sender-fault'): void;
 }
-
-export const TELEMETRY = Symbol('Telemetry');
