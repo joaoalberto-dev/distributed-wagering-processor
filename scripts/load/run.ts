@@ -388,278 +388,307 @@ async function main() {
   let reading: Promise<void> | undefined;
   const apps: Subprocess[] = [];
   const interrupted = new AbortController();
-  const terminate = () => interrupted.abort(new Error('Load run interrupted'));
-  process.once('SIGINT', terminate);
-  process.once('SIGTERM', terminate);
+  let signals = 0;
+  // The first signal stops the run and cleans up; a third forces an exit.
+  const terminate = () => {
+    signals += 1;
+    if (signals === 1) interrupted.abort(new Error('Load run interrupted'));
+    else if (signals === 2)
+      console.error('Cleaning up; interrupt again to exit without cleanup');
+    else process.exit(130);
+  };
+  process.on('SIGINT', terminate);
+  process.on('SIGTERM', terminate);
+  const stopped = new Promise<never>((_, reject) =>
+    interrupted.signal.addEventListener(
+      'abort',
+      () => reject(interrupted.signal.reason),
+      { once: true },
+    ),
+  );
+  stopped.catch(() => {});
+  let run: Promise<void> | undefined;
+  let failure: unknown;
+  let cleanupFailure: string | undefined;
   try {
-    await server.unsafe(`CREATE DATABASE "${database}"`);
-    created = true;
-    setupStarted = true;
-    const provisioned = await setup({ env, database });
-    sql = new SQL(provisioned.ownerUrl);
-    for (const [index, target] of targets.entries()) {
-      const child = Bun.spawn(
-        ['bun', '--no-env-file', 'dist/bootstrap/main.js'],
+    run = (async () => {
+      await server.unsafe(`CREATE DATABASE "${database}"`);
+      created = true;
+      setupStarted = true;
+      const provisioned = await setup({ env, database });
+      sql = new SQL(provisioned.ownerUrl);
+      for (const [index, target] of targets.entries()) {
+        interrupted.signal.throwIfAborted();
+        const child = Bun.spawn(
+          ['bun', '--no-env-file', 'dist/bootstrap/main.js'],
+          {
+            env: {
+              PATH: process.env.PATH,
+              HOME: process.env.HOME,
+              ...env,
+              DATABASE_URL: provisioned.databaseUrl,
+              DATABASE_OWNER_URL: provisioned.ownerUrl,
+              PORT: new URL(target).port,
+              INSTANCE_ID: `${runId}-${index}`,
+            },
+            stdout: Bun.file(join(folder, `app-${index}.log`)),
+            stderr: 'inherit',
+          },
+        );
+        apps.push(child);
+        await awaitReady(child, target);
+      }
+      interrupted.signal.throwIfAborted();
+      reader = new LoadEvents(sqs, provisioned.queueUrls.events);
+      reading = reader.read();
+      const wallets = [];
+      for (let index = 0; index < settings.wallets; index += 1) {
+        const target = targets[index % targets.length];
+        requireCondition(target, 'Missing fixture target');
+        wallets.push(await createWallet(target, Bun.randomUUIDv7()));
+      }
+      const pids = apps.map((app) => app.pid);
+      const stages = arrivalStages(
+        settings.profile,
+        settings.seconds,
+        settings.rate,
+      );
+      const fixturePath = join(folder, 'fixtures.json');
+      const samplePath = join(folder, 'samples.json.gz');
+      const summaryPath = join(folder, 'summary.json');
+      const reportPath = join(folder, 'report.html');
+
+      await Bun.write(
+        fixturePath,
+        JSON.stringify({
+          settings,
+          runId,
+          targets,
+          wallets,
+          workloads,
+          stages,
+          smokeIterations: SMOKE_ITERATIONS,
+        }),
+      );
+      const revision = Bun.spawnSync(['git', 'rev-parse', 'HEAD'])
+        .stdout.toString()
+        .trim();
+      const gitStatus = Bun.spawnSync(['git', 'status', '--porcelain'])
+        .stdout.toString()
+        .trim();
+      const metadata = {
+        runId,
+        revision,
+        dirty: gitStatus.length !== 0,
+        command: 'bun run test:load',
+        settings,
+        targets,
+        pids,
+        postgresHost: owner.host,
+        sqsEndpoint: endpoint.origin,
+        bun: Bun.version,
+        k6: version,
+        hardware: {
+          os: process.platform,
+          kernel: release(),
+          cpu: cpus()[0]?.model,
+          logicalCpus: availableParallelism(),
+          memoryBytes: totalmem(),
+        },
+      };
+      await Bun.write(
+        join(folder, 'run.json'),
+        JSON.stringify(metadata, null, 2),
+      );
+      await capture(targets, folder, 'before', sql, pids);
+      interrupted.signal.throwIfAborted();
+      const traffic = Bun.spawn(
+        [
+          k6,
+          'run',
+          '--no-color',
+          '--out',
+          `json=${samplePath}`,
+          'load/traffic.js',
+        ],
         {
           env: {
+            ...process.env,
             PATH: process.env.PATH,
-            HOME: process.env.HOME,
-            ...env,
-            DATABASE_URL: provisioned.databaseUrl,
-            DATABASE_OWNER_URL: provisioned.ownerUrl,
-            PORT: new URL(target).port,
-            INSTANCE_ID: `${runId}-${index}`,
+            LOAD_FIXTURES: fixturePath,
+            LOAD_SUMMARY: summaryPath,
+            K6_WEB_DASHBOARD: 'true',
+            K6_WEB_DASHBOARD_PORT: '-1',
+            K6_WEB_DASHBOARD_EXPORT: reportPath,
+            K6_WEB_DASHBOARD_PERIOD: '1s',
           },
-          stdout: Bun.file(join(folder, `app-${index}.log`)),
+          stdout: 'inherit',
           stderr: 'inherit',
+          signal: interrupted.signal,
         },
       );
-      apps.push(child);
-      await awaitReady(child, target);
-    }
-    interrupted.signal.throwIfAborted();
-    reader = new LoadEvents(sqs, provisioned.queueUrls.events);
-    reading = reader.read();
-    const wallets = [];
-    for (let index = 0; index < settings.wallets; index += 1) {
-      const target = targets[index % targets.length];
-      requireCondition(target, 'Missing fixture target');
-      wallets.push(await createWallet(target, Bun.randomUUIDv7()));
-    }
-    const pids = apps.map((app) => app.pid);
-    const stages = arrivalStages(
-      settings.profile,
-      settings.seconds,
-      settings.rate,
-    );
-    const fixturePath = join(folder, 'fixtures.json');
-    const samplePath = join(folder, 'samples.json.gz');
-    const summaryPath = join(folder, 'summary.json');
-    const reportPath = join(folder, 'report.html');
-
-    await Bun.write(
-      fixturePath,
-      JSON.stringify({
-        settings,
-        runId,
-        targets,
-        wallets,
-        workloads,
-        stages,
-        smokeIterations: SMOKE_ITERATIONS,
-      }),
-    );
-    const revision = Bun.spawnSync(['git', 'rev-parse', 'HEAD'])
-      .stdout.toString()
-      .trim();
-    const gitStatus = Bun.spawnSync(['git', 'status', '--porcelain'])
-      .stdout.toString()
-      .trim();
-    const metadata = {
-      runId,
-      revision,
-      dirty: gitStatus.length !== 0,
-      command: 'bun run test:load',
-      settings,
-      targets,
-      pids,
-      postgresHost: owner.host,
-      sqsEndpoint: endpoint.origin,
-      bun: Bun.version,
-      k6: version,
-      hardware: {
-        os: process.platform,
-        kernel: release(),
-        cpu: cpus()[0]?.model,
-        logicalCpus: availableParallelism(),
-        memoryBytes: totalmem(),
-      },
-    };
-    await Bun.write(
-      join(folder, 'run.json'),
-      JSON.stringify(metadata, null, 2),
-    );
-    await capture(targets, folder, 'before', sql, pids);
-    const traffic = Bun.spawn(
-      [
-        k6,
-        'run',
-        '--no-color',
-        '--out',
-        `json=${samplePath}`,
-        'load/traffic.js',
-      ],
-      {
-        env: {
-          ...process.env,
-          PATH: process.env.PATH,
-          LOAD_FIXTURES: fixturePath,
-          LOAD_SUMMARY: summaryPath,
-          K6_WEB_DASHBOARD: 'true',
-          K6_WEB_DASHBOARD_PORT: '-1',
-          K6_WEB_DASHBOARD_EXPORT: reportPath,
-          K6_WEB_DASHBOARD_PERIOD: '1s',
-        },
-        stdout: 'inherit',
-        stderr: 'inherit',
-        signal: interrupted.signal,
-      },
-    );
-    const duration = stages.reduce((sum, stage) => sum + stage.seconds, 0);
-    const active = new AbortController();
-    const snapshots =
-      settings.profile === 'smoke'
-        ? Promise.resolve()
-        : (async () => {
-            // Probe gauges during traffic as they can return to zero before the final scrape.
-            const interval =
-              Math.min(10, Math.max(1, Math.floor(duration / 4))) * 1000;
-            for (let index = 1; !active.signal.aborted; index += 1) {
-              const signal = AbortSignal.any([
-                AbortSignal.timeout(interval),
-                active.signal,
-              ]);
-              await new Promise<void>((resolve) =>
-                signal.addEventListener('abort', () => resolve(), {
-                  once: true,
-                }),
-              );
-              if (!active.signal.aborted)
-                await capture(targets, folder, `active-${index}`, sql, pids);
-            }
-          })().catch(async (error: unknown) => {
-            await Bun.write(
-              join(folder, 'active-metrics-error.txt'),
-              String(error),
-            );
-          });
-
-    const exit = await traffic.exited.finally(() => active.abort());
-
-    if (await Bun.file(reportPath).exists()) {
-      console.log(`Performance report: ${reportPath}`);
-    } else {
-      console.log('HTML report unavailable (test may be too short).');
-    }
-
-    await snapshots;
-    await capture(targets, folder, 'traffic-ended', sql, pids);
-    const summary = (await Bun.file(summaryPath).json()) as Summary;
-    const metric = (name: string) => summary.metrics[name]?.values;
-    const count = metric('completed_workloads')?.count ?? 0;
-    const started = metric('started_workloads')?.count ?? 0;
-    requireCondition(
-      count > 0 &&
-        count === started &&
-        (settings.profile !== 'smoke' || count === SMOKE_ITERATIONS),
-      `Incomplete workloads ${count}/${started}; inspect k6 samples`,
-    );
-    const verification = await verifyLoad({
-      sql,
-      sqs,
-      queues: provisioned.queueUrls,
-      reader,
-      settings,
-      wallets,
-      count,
-      targets,
-      runId,
-    });
-    const replayChecked = await historicalReplay(sql, targets.at(-1) ?? '');
-    requireCondition(
-      !settings.mix.includes('mixed') || replayChecked,
-      'Missing historical replay probe',
-    );
-    await capture(targets, folder, 'drained', sql, pids);
-    const trafficSeconds = summary.state.testRunDurationMs / 1000;
-    const requests = metric('http_reqs')?.count ?? 0;
-    const breakdown = await requestBreakdown(samplePath);
-    requireCondition(
-      Object.values(breakdown).reduce((sum, count) => sum + count, 0) ===
-        requests,
-      'Request samples do not match the k6 summary',
-    );
-    for (const [index] of targets.entries()) {
-      requireCondition(
-        Object.keys(breakdown).some(
-          (key) => key.split('/')[4] === String(index),
-        ),
-        `Instance ${index} received no measured traffic`,
-      );
-    }
-    const scheduledSeconds = stages.reduce(
-      (sum, stage) => sum + stage.seconds,
-      0,
-    );
-    let previous = 1;
-    let offered = 0;
-    for (const stage of stages) {
-      offered += ((previous + stage.rate) * stage.seconds) / 2;
-      previous = stage.rate;
-    }
-    const expectedRequestsPerWorkload =
-      settings.mix.reduce(
-        (sum, kind) =>
-          sum +
-          workloads[kind].reduce(
-            (count, step) => count + ('duplicate' in step ? 3 : 1),
-            0,
-          ),
-        0,
-      ) / settings.mix.length;
-    const metrics = {
-      trafficSeconds,
-      arrivalStages: settings.profile === 'smoke' ? null : stages,
-      offeredWorkloadsPerSecond:
-        settings.profile === 'smoke' ? null : offered / scheduledSeconds,
-      plannedRequestsPerSecond:
+      const duration = stages.reduce((sum, stage) => sum + stage.seconds, 0);
+      const active = new AbortController();
+      const snapshots =
         settings.profile === 'smoke'
-          ? null
-          : (offered / scheduledSeconds) * expectedRequestsPerWorkload,
-      requestsByScenarioOperationVariantLaneInstanceStatus: breakdown,
-      requests,
-      requestThroughput: requests / trafficSeconds,
-      uniqueProcessedPerSecond: verification.processed / trafficSeconds,
-      droppedIterations: metric('dropped_iterations')?.count ?? 0,
-      retries: metric('request_retries')?.count ?? 0,
-      retryAmplification:
-        requests / (requests - (metric('request_retries')?.count ?? 0)),
-      serviceUnavailable: metric('service_unavailable')?.count ?? 0,
-      perAttemptMs: metric('http_req_duration'),
-      operationCompletionMs: metric('operation_completion_ms'),
-      httpFailureRate: metric('http_req_failed')?.rate ?? 0,
-      unexpectedRate: metric('unexpected_response')?.rate ?? 0,
-    };
-    await Bun.write(
-      join(folder, 'verification.json'),
-      JSON.stringify({ ...verification, replayChecked }, null, 2),
-    );
-    await Bun.write(
-      join(folder, 'report.json'),
-      JSON.stringify(
-        { ...metadata, metrics, verification, replayChecked, k6Exit: exit },
-        null,
-        2,
-      ),
-    );
-    console.log(
-      `Verified ${verification.operations} operations, ${verification.events} events and ${verification.wallets} wallets in ${runId}`,
-    );
-    requireCondition(
-      exit === 0,
-      `k6 exited ${exit}; inspect its threshold results`,
-    );
+          ? Promise.resolve()
+          : (async () => {
+              // Probe gauges during traffic as they can return to zero before the final scrape.
+              const interval =
+                Math.min(10, Math.max(1, Math.floor(duration / 4))) * 1000;
+              for (let index = 1; !active.signal.aborted; index += 1) {
+                const signal = AbortSignal.any([
+                  AbortSignal.timeout(interval),
+                  active.signal,
+                ]);
+                await new Promise<void>((resolve) =>
+                  signal.addEventListener('abort', () => resolve(), {
+                    once: true,
+                  }),
+                );
+                if (!active.signal.aborted)
+                  await capture(targets, folder, `active-${index}`, sql, pids);
+              }
+            })().catch(async (error: unknown) => {
+              await Bun.write(
+                join(folder, 'active-metrics-error.txt'),
+                String(error),
+              );
+            });
+
+      const exit = await traffic.exited.finally(() => active.abort());
+
+      if (await Bun.file(reportPath).exists()) {
+        console.log(`Performance report: ${reportPath}`);
+      } else {
+        console.log('HTML report unavailable (test may be too short).');
+      }
+
+      await snapshots;
+      await capture(targets, folder, 'traffic-ended', sql, pids);
+      const summary = (await Bun.file(summaryPath).json()) as Summary;
+      const metric = (name: string) => summary.metrics[name]?.values;
+      const count = metric('completed_workloads')?.count ?? 0;
+      const started = metric('started_workloads')?.count ?? 0;
+      requireCondition(
+        count > 0 &&
+          count === started &&
+          (settings.profile !== 'smoke' || count === SMOKE_ITERATIONS),
+        `Incomplete workloads ${count}/${started}; inspect k6 samples`,
+      );
+      const verification = await verifyLoad({
+        sql,
+        sqs,
+        queues: provisioned.queueUrls,
+        reader,
+        settings,
+        wallets,
+        count,
+        targets,
+        runId,
+      });
+      const replayChecked = await historicalReplay(sql, targets.at(-1) ?? '');
+      requireCondition(
+        !settings.mix.includes('mixed') || replayChecked,
+        'Missing historical replay probe',
+      );
+      await capture(targets, folder, 'drained', sql, pids);
+      const trafficSeconds = summary.state.testRunDurationMs / 1000;
+      const requests = metric('http_reqs')?.count ?? 0;
+      const breakdown = await requestBreakdown(samplePath);
+      requireCondition(
+        Object.values(breakdown).reduce((sum, count) => sum + count, 0) ===
+          requests,
+        'Request samples do not match the k6 summary',
+      );
+      for (const [index] of targets.entries()) {
+        requireCondition(
+          Object.keys(breakdown).some(
+            (key) => key.split('/')[4] === String(index),
+          ),
+          `Instance ${index} received no measured traffic`,
+        );
+      }
+      const scheduledSeconds = stages.reduce(
+        (sum, stage) => sum + stage.seconds,
+        0,
+      );
+      let previous = 1;
+      let offered = 0;
+      for (const stage of stages) {
+        offered += ((previous + stage.rate) * stage.seconds) / 2;
+        previous = stage.rate;
+      }
+      const expectedRequestsPerWorkload =
+        settings.mix.reduce(
+          (sum, kind) =>
+            sum +
+            workloads[kind].reduce(
+              (count, step) => count + ('duplicate' in step ? 3 : 1),
+              0,
+            ),
+          0,
+        ) / settings.mix.length;
+      const metrics = {
+        trafficSeconds,
+        arrivalStages: settings.profile === 'smoke' ? null : stages,
+        offeredWorkloadsPerSecond:
+          settings.profile === 'smoke' ? null : offered / scheduledSeconds,
+        plannedRequestsPerSecond:
+          settings.profile === 'smoke'
+            ? null
+            : (offered / scheduledSeconds) * expectedRequestsPerWorkload,
+        requestsByScenarioOperationVariantLaneInstanceStatus: breakdown,
+        requests,
+        requestThroughput: requests / trafficSeconds,
+        uniqueProcessedPerSecond: verification.processed / trafficSeconds,
+        droppedIterations: metric('dropped_iterations')?.count ?? 0,
+        retries: metric('request_retries')?.count ?? 0,
+        retryAmplification:
+          requests / (requests - (metric('request_retries')?.count ?? 0)),
+        serviceUnavailable: metric('service_unavailable')?.count ?? 0,
+        perAttemptMs: metric('http_req_duration'),
+        operationCompletionMs: metric('operation_completion_ms'),
+        httpFailureRate: metric('http_req_failed')?.rate ?? 0,
+        unexpectedRate: metric('unexpected_response')?.rate ?? 0,
+      };
+      await Bun.write(
+        join(folder, 'verification.json'),
+        JSON.stringify({ ...verification, replayChecked }, null, 2),
+      );
+      await Bun.write(
+        join(folder, 'report.json'),
+        JSON.stringify(
+          { ...metadata, metrics, verification, replayChecked, k6Exit: exit },
+          null,
+          2,
+        ),
+      );
+      console.log(
+        `Verified ${verification.operations} operations, ${verification.events} events and ${verification.wallets} wallets in ${runId}`,
+      );
+      requireCondition(
+        exit === 0,
+        `k6 exited ${exit}; inspect its threshold results`,
+      );
+    })();
+    run.catch(() => {});
+    // Racing the whole run lets an interrupt reach cleanup from any step.
+    await Promise.race([run, stopped]);
   } catch (error) {
+    failure = error;
     await Bun.write(
       join(folder, 'failure.json'),
       JSON.stringify({ runId, error: String(error) }, null, 2),
     );
     throw error;
   } finally {
-    process.removeListener('SIGINT', terminate);
-    process.removeListener('SIGTERM', terminate);
     reader?.stop();
     const cleanup = await Promise.allSettled(apps.map(stopChild));
+    // After an interrupt, let in-flight steps fail against the stopped apps
+    // before their database and queues are removed.
+    if (interrupted.signal.aborted && run)
+      await Promise.race([run.catch(() => {}), Bun.sleep(10_000)]);
     await reading;
     await sql?.close();
     if (setupStarted) {
@@ -680,15 +709,24 @@ async function main() {
         await server.unsafe(`DROP DATABASE "${database}" WITH (FORCE)`);
       if (setupStarted)
         await server.unsafe(`DROP ROLE IF EXISTS "${database}"`);
+    } catch (error) {
+      cleanup.push({ status: 'rejected', reason: error });
     } finally {
       sqs.destroy();
       await server.close();
     }
-    requireCondition(
-      cleanup.every((item) => item.status === 'fulfilled'),
-      `Cleanup failed for ${runId}`,
+    process.removeListener('SIGINT', terminate);
+    process.removeListener('SIGTERM', terminate);
+    const leftovers = cleanup.flatMap((item) =>
+      item.status === 'rejected' ? [String(item.reason)] : [],
     );
+    if (leftovers.length !== 0) {
+      cleanupFailure = `Cleanup failed for ${runId}: ${leftovers.join('; ')}`;
+      // The run's own failure stays the thrown error; this is only reported.
+      if (failure !== undefined) console.error(cleanupFailure);
+    }
   }
+  if (cleanupFailure) throw new Error(cleanupFailure);
 }
 
 try {
