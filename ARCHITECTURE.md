@@ -2,7 +2,7 @@
 
 This document describes the Distributed Wagering Processor: what it guarantees, how, and at what cost. The main body describes the current design, organized by the evaluation areas of the challenge. Appendix A keeps the decision log in chronological order, including decisions that were later replaced.
 
-*   **Status:** every mandatory requirement is implemented and tested (tasks 01–13 on the [project board](https://github.com/users/joaoalberto-dev/projects/3)); §7 maps each requirement to its tests and records a full run. The Stretch items of task 14 are built too: the CI job for the integration and concurrency layers, the three further reconciliation issues, `settlement_on_reversed_reference_total`, `bun run demo`, and `bun run dlq:redrive`; load testing is not. Where code and this document disagree, the disagreement is a bug in one of them.
+*   **Status:** §7 maps the challenge requirements to automated evidence and records the post-audit run for [project tasks 15–19](https://github.com/users/joaoalberto-dev/projects/3). The integration and concurrency evidence uses PostgreSQL and MiniStack. Migration 0007 has a documented downgrade precondition for cross-currency rejection history.
 *   **Detail:** the full design, with port signatures, the schema specification, the metric table, the test harness, and the rejected alternatives (A1–A42), is in [`docs/designs/distributed-wagering-processor.md`](docs/designs/distributed-wagering-processor.md). That document is frozen; this one is canonical.
 *   **Conventions:** "challenge §N" refers to a section of [`CHALLENGE.md`](CHALLENGE.md). Money amounts are decimal strings with two places.
 
@@ -330,7 +330,7 @@ The envelope is an abstract `IntegrationEvent<T>` with one subclass per event, c
 *   **Isolation.** Tests use their own database (`wagering_test`) and their own queues per spec file, so running containers of the `app` profile never touch test data.
 *   **Outages** are simulated with a TCP proxy between each spawned process and PostgreSQL or MiniStack. Crash points (`crash-after-commit`, `crash-after-send`) exist only under `NODE_ENV=test`.
 *   **Determinism.**
-    *   Tests wait on conditions with explicit timeouts, never on sleeps.
+    *   Conditions, held database locks, and fault hooks establish ordering and crash windows. Tests also use timed waits for polling, visibility and retry windows, and the simulated outage.
     *   They assert distinct PIDs.
     *   Clients retry `503` with the same key.
     *   Every financial scenario ends by reconciling every wallet it touched.
@@ -380,18 +380,19 @@ Beyond the eight scenarios:
 
 | Challenge section | Requirement | Specs |
 |---|---|---|
+| §4 | Reversible schema migrations and preservation of rejection snapshots | `migrations` covers the empty round trip, the compatible-data downgrade, and atomic refusal for cross-currency history |
 | §5 | No `number` for money; no negative balance; no direct balance update; append-only ledger | `money.spec`, `schema-constraints`, `commit-consistency` |
 | §6.1 | `Money` scale, rounding, and invalid input | `money.spec`, `primitives.spec` |
 | §6.2 | `Wallet` invariants and version | `wallet.spec` |
 | §6.3 | Transaction states and factories | `wager-transaction.spec`, `schema-constraints` |
 | §6.4 | Immutable ledger entry | `wallet-ledger-entry.spec`, `schema-constraints` |
 | §6.5 | Inbox and outbox | `inbox-redelivery`, `outbox-publisher`, `outbox-message.spec` |
-| §7 | Kind rules, references, and failure codes | `settle.spec`, `reversals`, `wagering-http` |
+| §7 | Kind rules, references, and failure codes | `settle.spec`, `reversals`, `wagering-http`, `historical-replay` (stored success and rejection snapshots; racing refunds) |
 | §7.1 | Out-of-order references | `resolve-pending-references.spec`, `pending-references`, `worker-race`, `out-of-order` |
-| §8 | Per-wallet serialization and the mandatory scenario | `balance-contention`, `duplicate-bet`, `hot-wallet` |
+| §8 | Per-wallet serialization and the mandatory scenario | `balance-contention`, `duplicate-bet`, `hot-wallet`, `historical-replay` |
 | §9 | Routes, statuses, reconciliation, and health | `wallets-http`, `wagering-http`, `reconciliation`, `operational`, `observability` |
-| §10 | SQS idempotency, retry, and DLQ | `inbox-redelivery`, `sqs-dlq`, `sqs-ordering`, `crash-after-commit`, `sqs-outage`, `redrive-dlq` |
-| §11 | Outbox and the minimum events | `outbox-publisher`, `concurrent-publishers`, `wager-events.spec` |
+| §10 | SQS idempotency, retry, and DLQ | `inbox-redelivery`, `sqs-dlq`, `sqs-ordering`, `crash-after-commit`, `sqs-outage`, `redrive-dlq`; `sqs-dlq` covers conflicting source deliveries and a failed delete after a DLQ send |
+| §11 | Outbox and the minimum events | `outbox-publisher`, `concurrent-publishers`, `wager-events.spec`; direct scenario checks listed below |
 | §12 | Logs and the seven metric categories | `observability`, `metrics.spec`, `json-logger.spec` |
 | §13 | Unit, integration, and concurrency layers | the checklist above |
 
@@ -399,7 +400,19 @@ Unit specs are under `src/` next to their source; the others are `test/integrati
 
 ### Test evidence
 
-A full run of `bun run test:all` on 2026-11-12, from commit `7bac3fb` (task 14) on an 8-core AMD Ryzen 7 5700X3D with 60 GiB of memory, Linux, Bun 1.4.4, and the compose PostgreSQL 17.11 and MiniStack 1.5.39:
+Direct queue assertions pair each transaction's expected event types with durable outbox IDs and received bodies in `duplicate-bet`, `balance-contention`, `historical-replay`, `crash-after-commit`, `out-of-order`, and `restart-recovery`. They cover rejection, entry into pending, and processed LOSS without a balance event. Replay and inbox redelivery preserve outbox IDs. The restart spec permits a pending event for references that raced their dependencies; the out-of-order spec requires it because it observes each pending status before submitting the corresponding BET. The other financial scenarios use the dedicated publisher suite for event guarantees. The publisher crash spec simulates republishing outside the five-minute FIFO window by resending under new transport deduplication IDs.
+
+The post-audit run on 2026-11-12 used commit `bdaeda9a47ba84e299e3570341fa0a3091ba3809`, Linux on an AMD Ryzen 7 5700X3D (8 cores, 16 threads, 60 GiB RAM), Bun 1.4.4, and isolated PostgreSQL 17.11 and MiniStack 1.5.39 containers on loopback. The suites ran in sequence.
+
+| Command | Result | Test time |
+|---|---|---:|
+| `bun run check` | Type check, lint, format check and 459 unit tests passed | 0.43 s for tests |
+| `bun run test:integration` | Build and 234 tests passed | 76.61 s for tests |
+| `bun run test:concurrency` | Build and 12 tests passed | 110.78 s for tests |
+
+The migration and DLQ tests execute both audit reproductions against the local services. Source review supplies the argument that a stable SQS ID survives redelivery and that the migration's table lock keeps concurrent writes from invalidating its preflight check. Real AWS behavior remains unverified. Double-entry bookkeeping, OpenTelemetry and dashboards are outside the challenge scope. Load measurements are an optional extension.
+
+The historical task 14 run of `bun run test:all` on 2026-11-12, from commit `7bac3fb` (task 14) on an 8-core AMD Ryzen 7 5700X3D with 60 GiB of memory, Linux, Bun 1.4.4, and the compose PostgreSQL 17.11 and MiniStack 1.5.39:
 
 | Layer | Specs | Tests | Result | Test time |
 |---|---|---|---|---|
