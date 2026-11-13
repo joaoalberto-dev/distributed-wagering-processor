@@ -8,6 +8,7 @@ import {
 import type { SQL } from 'bun';
 import type { SetupResult } from '../setup.js';
 import { OPENING, type Profile, type Workload, workloads } from './workload.js';
+import { assignment } from '../../load/assignment.js';
 
 export type Settings = {
   profile: Profile;
@@ -183,15 +184,12 @@ function expectedOperations(
   count: number,
 ) {
   const operations = new Map<string, Expected>();
-  const hot = settings.profile === 'hot' || settings.profile === 'saturation';
   for (let index = 0; index < count; index += 1) {
-    const seed = (index + settings.seed) >>> 0;
-    const name = settings.mix[seed % settings.mix.length];
-    const walletIndex = hot
-      ? seed % 5 === 0
-        ? 1 + (Math.floor(seed / 5) % (wallets.length - 1))
-        : 0
-      : (Math.imul(seed, 2654435761) >>> 0) % wallets.length;
+    const { workload: name, walletIndex } = assignment(
+      index,
+      settings,
+      wallets.length,
+    );
     const wallet = wallets[walletIndex];
     requireCondition(name && wallet, 'Invalid workload assignment');
     const prefix = `${name}-${index}`;

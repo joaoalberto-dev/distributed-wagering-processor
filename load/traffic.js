@@ -2,6 +2,7 @@ import { sleep } from 'k6';
 import exec from 'k6/execution';
 import http from 'k6/http';
 import { Counter, Rate, Trend } from 'k6/metrics';
+import { assignment } from './assignment.js';
 
 const {
   settings,
@@ -162,17 +163,12 @@ function submit(wallet, prefix, step, target, lane) {
 export default function () {
   started.add(1);
   const index = exec.scenario.iterationInTest;
-  const seed = (index + settings.seed) >>> 0;
-  const mix = settings.mix;
-  const workload = mix[seed % mix.length];
-  const hot = settings.profile === 'hot' || settings.profile === 'saturation';
-  const walletIndex = hot
-    ? seed % 5 === 0
-      ? 1 + (Math.floor(seed / 5) % (wallets.length - 1))
-      : 0
-    : (Math.imul(seed, 2654435761) >>> 0) % wallets.length;
+  const { workload, walletIndex, lane } = assignment(
+    index,
+    settings,
+    wallets.length,
+  );
   const prefix = `${workload}-${index}`;
-  const lane = hot && walletIndex === 0 ? 'hot' : 'distributed';
   let passed = true;
   try {
     for (const [stepIndex, step] of workloads[workload].entries()) {
