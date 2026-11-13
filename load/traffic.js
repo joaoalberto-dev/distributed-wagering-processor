@@ -15,6 +15,7 @@ const {
 const unexpected = new Rate('unexpected_response');
 const retries = new Counter('request_retries');
 const unavailable = new Counter('service_unavailable');
+const started = new Counter('started_workloads');
 const completed = new Counter('completed_workloads');
 const completionTime = new Trend('operation_completion_ms', true);
 
@@ -159,6 +160,7 @@ function submit(wallet, prefix, step, target, lane) {
 }
 
 export default function () {
+  started.add(1);
   const index = exec.scenario.iterationInTest;
   const seed = (index + settings.seed) >>> 0;
   const mix = settings.mix;

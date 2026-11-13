@@ -532,7 +532,7 @@ async function main() {
     const summary = (await Bun.file(summaryPath).json()) as Summary;
     const metric = (name: string) => summary.metrics[name]?.values;
     const count = metric('completed_workloads')?.count ?? 0;
-    const started = metric('iterations')?.count ?? 0;
+    const started = metric('started_workloads')?.count ?? 0;
     requireCondition(
       count > 0 &&
         count === started &&
