@@ -18,11 +18,19 @@ import {
 import { settlePendingEvents, useDatabase } from '../support/database.js';
 import { brl, keyOf, type WagerBody, wagerBody } from '../support/factories.js';
 import { HttpClient } from '../support/http-client.js';
+import { EventReader } from '../support/event-reader.js';
 import { useInfrastructure } from '../support/infrastructure.js';
 import { expectReconciled } from '../support/reconcile.js';
 import { type SpawnedApp, spawnApp } from '../support/spawn-app.js';
 import { envelopeOf, TestQueues } from '../support/sqs.js';
 import { waitFor } from '../support/wait-for.js';
+
+import {
+  CHANGED,
+  expectLedger,
+  expectWalletEvents,
+  PROCESSED,
+} from '../support/wallet-evidence.js';
 
 const WALLETS = 10;
 const GROUPS_PER_WALLET = 10;
@@ -223,13 +231,38 @@ describe('3 processes killed under 500 mixed operations, then 3 new ones', () =>
     expect(await queues.deadLetters()).toEqual([]);
 
     // Every operation was processed exactly once.
-    const statuses = (await database.owner`
-      SELECT status, count(*)::int AS count FROM wager_transactions
+    const transactions = (await database.owner`
+      SELECT id, external_transaction_id, kind, status FROM wager_transactions
        WHERE wallet_id IN ${database.owner(walletIds)} AND kind <> 'OPENING'
-       GROUP BY status`) as { status: string; count: number }[];
-    expect(statuses).toEqual([{ status: 'PROCESSED', count: OPERATIONS }]);
+       `) as {
+      id: string;
+      external_transaction_id: string;
+      kind: string;
+      status: string;
+    }[];
+    const byExternal = new Map(
+      transactions.map((tx) => [tx.external_transaction_id, tx]),
+    );
+    expect(transactions).toHaveLength(OPERATIONS);
+    const expected = operations.map(({ body }) => {
+      const tx = byExternal.get(body.externalTransactionId);
+      if (tx === undefined)
+        throw new Error(`Missing transaction ${body.externalTransactionId}`);
+      expect(tx).toMatchObject({ kind: body.kind, status: 'PROCESSED' });
+      return {
+        id: tx.id,
+        types: body.kind === 'LOSS' ? [PROCESSED] : [PROCESSED, CHANGED],
+        optionalPending: body.referenceExternalTransactionId !== undefined,
+      };
+    });
     const client = second[0] as HttpClient;
     for (const walletId of walletIds) {
+      await expectLedger(
+        database.app,
+        walletId,
+        EXPECTED_VERSION,
+        EXPECTED_BALANCE.amount,
+      );
       const wallet = await walletOf(client, walletId);
       expect({
         walletId,
@@ -241,6 +274,12 @@ describe('3 processes killed under 500 mixed operations, then 3 new ones', () =>
         version: EXPECTED_VERSION,
       });
     }
+    await expectWalletEvents(
+      database.app,
+      new EventReader(infrastructure),
+      walletIds,
+      expected,
+    );
     await expectReconciled(client, walletIds);
   });
 });

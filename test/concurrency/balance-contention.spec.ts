@@ -13,16 +13,27 @@ import {
   useCluster,
   walletOf,
 } from '../support/cluster.js';
+import { useDatabase } from '../support/database.js';
 import { brl, wagerBody } from '../support/factories.js';
+import { EventReader } from '../support/event-reader.js';
 import { useInfrastructure } from '../support/infrastructure.js';
 import { expectReconciled } from '../support/reconcile.js';
 
+import {
+  CHANGED,
+  expectLedger,
+  expectWalletEvents,
+  PROCESSED,
+  REJECTED,
+} from '../support/wallet-evidence.js';
+
 const infrastructure = useInfrastructure('balance-contention');
+const database = useDatabase(infrastructure);
 const cluster = useCluster(infrastructure);
 
 const ROUNDS = 10;
 
-async function contend(round: number): Promise<string> {
+async function contend(round: number) {
   const wallet = await openWallet(cluster.client(round), '100.00');
   const a = wagerBody(wallet, { money: brl('80.00') });
   const b = wagerBody(wallet, { money: brl('80.00') });
@@ -62,7 +73,14 @@ async function contend(round: number): Promise<string> {
     'CREDIT',
     'DEBIT',
   ]);
-  return wallet.id;
+  await expectLedger(database.app, wallet.id, 2, '20.00');
+  return {
+    walletId: wallet.id,
+    expected: responses.map(({ status, body }) => ({
+      id: body.transactionId,
+      types: status === 200 ? [PROCESSED, CHANGED] : [REJECTED],
+    })),
+  };
 }
 
 describe('two 80.00 bets on a 100.00 wallet through two processes', () => {
@@ -70,6 +88,13 @@ describe('two 80.00 bets on a 100.00 wallet through two processes', () => {
     const wallets = await Promise.all(
       Array.from({ length: ROUNDS }, (_, round) => contend(round)),
     );
-    await expectReconciled(cluster.client(0), wallets);
+    const ids = wallets.map(({ walletId }) => walletId);
+    await expectWalletEvents(
+      database.app,
+      new EventReader(infrastructure),
+      ids,
+      wallets.flatMap(({ expected }) => expected),
+    );
+    await expectReconciled(cluster.client(0), ids);
   });
 });

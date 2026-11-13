@@ -14,12 +14,22 @@ import {
   useCluster,
   walletOf,
 } from '../support/cluster.js';
+import { useDatabase } from '../support/database.js';
 import { brl, type WagerBody, wagerBody } from '../support/factories.js';
+import { EventReader } from '../support/event-reader.js';
 import { useInfrastructure } from '../support/infrastructure.js';
 import { expectReconciled } from '../support/reconcile.js';
 import { envelopeOf, TestQueues } from '../support/sqs.js';
 
+import {
+  CHANGED,
+  expectWalletEvents,
+  PENDING,
+  PROCESSED,
+} from '../support/wallet-evidence.js';
+
 const infrastructure = useInfrastructure('out-of-order');
+const database = useDatabase(infrastructure);
 const cluster = useCluster(infrastructure);
 
 const WALLETS = 5;
@@ -100,6 +110,19 @@ describe('20 reversals sent before their bets over 3 processes', () => {
         BETS_PER_WALLET + 1,
       );
     }
+    const walletIds = wallets.map(({ id }) => id);
+    await expectWalletEvents(
+      database.app,
+      new EventReader(infrastructure),
+      walletIds,
+      [
+        ...bets.map(({ id }) => ({ id, types: [PROCESSED, CHANGED] })),
+        ...decided.map(({ id }) => ({
+          id,
+          types: [PENDING, PROCESSED, CHANGED],
+        })),
+      ],
+    );
     await expectReconciled(
       cluster.client(0),
       wallets.map((w) => w.id),

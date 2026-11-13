@@ -13,11 +13,20 @@ import {
 import { useDatabase } from '../support/database.js';
 import { brl, wagerBody } from '../support/factories.js';
 import { HttpClient } from '../support/http-client.js';
+import { EventReader } from '../support/event-reader.js';
 import { useInfrastructure } from '../support/infrastructure.js';
 import { expectReconciled } from '../support/reconcile.js';
 import { type SpawnedApp, spawnApp } from '../support/spawn-app.js';
 import { envelopeOf, TestQueues } from '../support/sqs.js';
 import { waitFor } from '../support/wait-for.js';
+
+import {
+  CHANGED,
+  expectLedger,
+  expectWalletEvents,
+  PROCESSED,
+  walletOutbox,
+} from '../support/wallet-evidence.js';
 
 const infrastructure = useInfrastructure('crash-after-commit', {
   env: { SQS_VISIBILITY_TIMEOUT_SECONDS: '5' },
@@ -44,6 +53,10 @@ describe('a consumer killed after commit, before the delete', () => {
     await crashing.exited;
     expect(crashing.output()).not.toContain('"level":"error"');
 
+    const committedIds = (await walletOutbox(database.app, [wallet.id])).map(
+      ({ id }) => id,
+    );
+    expect(committedIds).toHaveLength(4);
     const survivors = await Promise.all([
       spawnApp({ env: infrastructure.env }),
       spawnApp({ env: infrastructure.env }),
@@ -77,9 +90,23 @@ describe('a consumer killed after commit, before the delete', () => {
       'CREDIT',
       'DEBIT',
     ]);
-    const inbox: unknown[] = await database.owner`
-      SELECT 1 FROM inbox WHERE message_id = ${envelope.messageId}`;
-    expect(inbox).toHaveLength(1);
+    const [inbox] = await database.owner`
+      SELECT inbox.transaction_id, wager_transactions.status
+      FROM inbox JOIN wager_transactions ON wager_transactions.id = inbox.transaction_id
+      WHERE message_id = ${envelope.messageId}`;
+    expect(inbox?.status).toBe('PROCESSED');
+    if (typeof inbox?.transaction_id !== 'string')
+      throw new Error('Missing inbox transaction');
+    expect(
+      (await walletOutbox(database.app, [wallet.id])).map(({ id }) => id),
+    ).toEqual(committedIds);
+    await expectLedger(database.app, wallet.id, 2, '75.00');
+    await expectWalletEvents(
+      database.app,
+      new EventReader(infrastructure),
+      [wallet.id],
+      [{ id: inbox.transaction_id, types: [PROCESSED, CHANGED] }],
+    );
     await expectReconciled(client, [wallet.id]);
   });
 });

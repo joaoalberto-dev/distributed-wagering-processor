@@ -1,6 +1,7 @@
 import type { SQL } from 'bun';
 import { expect } from 'bun:test';
 import type { EventReader, PublishedEvent } from './event-reader.js';
+import { waitFor } from './wait-for.js';
 
 export const PROCESSED = 'WagerTransactionProcessed';
 export const CHANGED = 'WalletBalanceChanged';
@@ -79,9 +80,11 @@ export async function expectWalletEvents(
       groupId: wallet_id,
     })),
   );
-  expect(
-    (await walletOutbox(sql, walletIds)).every(({ published }) => published),
-  ).toBe(true);
+  await waitFor(
+    async () =>
+      (await walletOutbox(sql, walletIds)).every(({ published }) => published),
+    { timeoutMs: 5000, description: 'the outbox publication commits' },
+  );
 }
 
 function minorUnits(amount: string): bigint {

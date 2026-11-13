@@ -11,11 +11,21 @@ import {
   useCluster,
   walletOf,
 } from '../support/cluster.js';
+import { useDatabase } from '../support/database.js';
 import { brl, wagerBody } from '../support/factories.js';
+import { EventReader } from '../support/event-reader.js';
 import { useInfrastructure } from '../support/infrastructure.js';
 import { expectReconciled } from '../support/reconcile.js';
 
+import {
+  CHANGED,
+  expectLedger,
+  expectWalletEvents,
+  PROCESSED,
+} from '../support/wallet-evidence.js';
+
 const infrastructure = useInfrastructure('duplicate-bet');
+const database = useDatabase(infrastructure);
 const cluster = useCluster(infrastructure);
 
 const COPIES = 50;
@@ -33,7 +43,7 @@ describe('the same bet sent 50 times over 3 processes', () => {
       Array.from({ length: COPIES }, () => 200),
     );
     const first = responses.find((r) => !r.body.idempotentReplay);
-    expect(first).toBeDefined();
+    if (first === undefined) throw new Error('Missing original BET response');
     expect(responses.filter((r) => !r.body.idempotentReplay)).toHaveLength(1);
     for (const response of responses) {
       expect(response.body).toEqual({
@@ -53,6 +63,13 @@ describe('the same bet sent 50 times over 3 processes', () => {
       'CREDIT',
       'DEBIT',
     ]);
+    await expectLedger(database.app, wallet.id, 2, '75.00');
+    await expectWalletEvents(
+      database.app,
+      new EventReader(infrastructure),
+      [wallet.id],
+      [{ id: first.body.transactionId, types: [PROCESSED, CHANGED] }],
+    );
     await expectReconciled(cluster.client(0), [wallet.id]);
   });
 });
